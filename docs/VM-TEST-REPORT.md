@@ -2,6 +2,14 @@
 
 Test date: 2026-08-15 (`Africa/Cairo`)
 
+This report covers two runs against the same disposable guest on 2026-08-15.
+The presentation and shell-integration matrix, with evidence under
+`.vm/shots-redesign-2026-08-15/`, came from a deterministic fixture harness: a
+fake CLI, an empty token-presence fixture, and a `sleep infinity` service
+drop-in. The live-account sections below, with evidence under
+`.vm/shots-live-2026-08-15/`, ran with no fixture active, in the environment
+described next.
+
 ## Environment and isolation
 
 - Omarchy package: `4.0.0rc2-1`.
