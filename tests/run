@@ -1,0 +1,10 @@
+#!/bin/bash
+
+set -euo pipefail
+
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+node --test "$root/tests/Model.test.js"
+"$root/tests/Status.test.sh"
+
+echo "All OmaOneDrive tests passed"

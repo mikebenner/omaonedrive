@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.salemsayed.omaonedrive",
+  "name": "OmaOneDrive",
+  "version": "1.0.0",
+  "author": "Salem Sayed",
+  "license": "MIT",
+  "description": "OneDrive service status, cloud usage, and recent files in the Omarchy bar.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "OmaOneDrive",
+    "description": "Control the installed OneDrive CLI, check cloud sync status, and open recent local files.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 30,
+      "recentFileLimit": 20
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Local refresh interval (seconds)",
+        "min": 10,
+        "max": 3600,
+        "step": 10,
+        "defaultValue": 30,
+        "description": "Reads the local service, journal, and cached cloud status. It does not contact Microsoft."
+      },
+      {
+        "key": "recentFileLimit",
+        "type": "integer",
+        "label": "Recent files",
+        "min": 5,
+        "max": 50,
+        "step": 5,
+        "defaultValue": 20,
+        "description": "Maximum number of recently modified local OneDrive files shown in the panel."
+      }
+    ]
+  }
+}
