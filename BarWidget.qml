@@ -13,9 +13,22 @@ BarWidget {
   readonly property bool active: service ? service.active : false
   readonly property bool syncing: service ? service.syncing : false
   readonly property bool installed: service ? service.installed : false
+  readonly property bool authenticated: service ? service.authenticated : false
   readonly property color iconColor: active
     ? (bar ? bar.barForeground : Color.foreground)
     : Qt.darker(bar ? bar.barForeground : Color.foreground, 1.55)
+  readonly property string badgeKind: !installed ? "missing"
+    : (!authenticated ? "login"
+      : (syncing ? "syncing"
+        : (!active ? "paused" : "")))
+  readonly property string badgeGlyph: badgeKind === "missing" ? "󰅖"
+    : (badgeKind === "login" ? "󰌋"
+      : (badgeKind === "paused" ? "󰏤"
+        : (badgeKind === "syncing" ? "󰑓" : "")))
+  readonly property color badgeColor: badgeKind === "login"
+    ? (bar ? bar.urgent : Color.urgent)
+    : (badgeKind === "syncing" ? Color.accent : iconColor)
+  readonly property color badgeBackground: bar ? bar.background : Color.background
   readonly property string tooltipText: service
     ? Model.tooltip(service, Date.now())
     : "Checking OneDrive…"
@@ -112,7 +125,7 @@ BarWidget {
           anchors.right: parent.right
           anchors.bottom: parent.bottom
           color: root.syncing ? Color.accent : root.iconColor
-          visible: root.active
+          visible: root.active && root.badgeKind === ""
 
           SequentialAnimation on opacity {
             running: root.syncing
@@ -120,6 +133,19 @@ BarWidget {
             NumberAnimation { to: 0.25; duration: 500 }
             NumberAnimation { to: 1.0; duration: 500 }
           }
+        }
+
+        StatusBadge {
+          anchors.right: parent.right
+          anchors.bottom: parent.bottom
+          visible: root.badgeKind !== ""
+          badgeSize: Style.space(8)
+          glyph: root.badgeGlyph
+          glyphColor: root.badgeColor
+          ringColor: root.badgeColor
+          background: root.badgeBackground
+          fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+          pulsing: root.badgeKind === "syncing"
         }
       }
     }

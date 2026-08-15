@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.salemsayed.omaonedrive",
   "name": "OmaOneDrive",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Salem Sayed",
   "license": "MIT",
-  "description": "OneDrive service status, cloud usage, and recent files in the Omarchy bar.",
+  "description": "OneDrive service status, cloud storage, and recent sync activity in the Omarchy bar.",
   "kinds": [
     "bar-widget"
   ],
@@ -20,7 +20,8 @@
     "defaultSection": "right",
     "defaults": {
       "refreshIntervalSec": 30,
-      "recentFileLimit": 20
+      "recentFileLimit": 20,
+      "panelStyle": "Full"
     },
     "schema": [
       {
@@ -42,6 +43,14 @@
         "step": 5,
         "defaultValue": 20,
         "description": "Maximum number of recently modified local OneDrive files shown in the panel."
+      },
+      {
+        "key": "panelStyle",
+        "type": "enum",
+        "label": "Panel layout",
+        "options": ["Full", "Compact"],
+        "defaultValue": "Full",
+        "description": "Full shows storage and recent activity. Compact shows storage only, in a shorter panel."
       }
     ]
   }

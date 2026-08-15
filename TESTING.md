@@ -35,15 +35,28 @@ journalctl --user -u omarchy-shell -n 200 --no-pager
 
 The functional matrix is:
 
-1. CLI missing: dim bar icon and explicit installation message.
-2. CLI present but token missing: login action opens a terminal.
-3. Authenticated service stopped: paused state and resume control.
-4. Authenticated service running: monitoring/syncing state and pause control.
-5. Explicit cloud check: quota, pending-change result, and cached check time.
-6. Sync folder and file rows open through the desktop session.
-7. Clean shell restart: no QML syntax, type, loader, or reference errors.
-8. Horizontal and vertical bar positions plus a light and dark Omarchy theme.
+1. CLI missing: missing-client badge and explicit installation message.
+2. CLI present but token missing: login badge and action opens a terminal.
+3. Authenticated service stopped: paused badge and resume control.
+4. Authenticated service running: quiet monitoring dot or pulsing syncing badge
+   plus the pause control.
+5. Explicit cloud check: storage meter, pending-change result, and cached check
+   time; unknown quota remains a clearly actionable state.
+6. Full layout: storage, bounded activity timeline, cloud/folder chips, and
+   clickable local-file activity rows.
+7. Compact layout: storage plus cloud and folder actions without the activity
+   timeline.
+8. Sync folder and activity file rows open through the desktop session.
+9. Clean shell restart: no QML syntax, type, loader, or reference errors.
+10. Horizontal and vertical bar positions plus a light and dark Omarchy theme.
+11. Bar icon states: missing, login, paused, syncing, and monitoring each render
+    distinctly.
+12. `panelStyle` Full and Compact both render without clipping.
 
-Real Microsoft authentication should use a disposable test account. Mocked VM
-coverage qualifies the UI and command boundary, but not Microsoft account
-policy, tenant consent, long-running API availability, or data transfer.
+Real Microsoft authentication should use a disposable test account. The
+2026-08-15 VM run additionally qualified interactive OAuth, real quota and
+pending-status responses, initial download, hash-verified upload/download,
+monitor upload, scoped remote deletion and reconciliation, pause/resume, and
+enabled-service recovery after reboot. See
+[the VM test report](docs/VM-TEST-REPORT.md) for its isolation and remaining
+qualification boundaries.

@@ -16,6 +16,9 @@ from pathlib import Path
 PLUGIN_ID = "io.github.salemsayed.omaonedrive"
 DEFAULT_SERVICE = "onedrive.service"
 SCAN_CACHE_SECONDS = 120
+MAX_SERVICE_EVENTS = 2
+MAX_FILE_EVENTS = 5
+ACTIVITY_LIMIT = 5
 
 
 def command_output(command, timeout=4):
@@ -118,7 +121,7 @@ def journal_state(service):
     ["journalctl", "--user", "--unit", service, "--lines", "120", "--no-pager", "--output", "json"],
     timeout=5,
   )
-  result = {"syncing": False, "lastSyncTs": 0, "lastError": ""}
+  result = {"syncing": False, "lastSyncTs": 0, "lastError": "", "events": []}
   if exit_code != 0:
     return result
 
@@ -140,11 +143,17 @@ def journal_state(service):
       last_start = max(last_start, timestamp)
     if "sync with microsoft onedrive is complete" in lowered:
       last_complete = max(last_complete, timestamp)
+      if timestamp > 0:
+        result["events"].append({"kind": "sync", "ts": timestamp, "text": "Sync complete"})
     if any(marker in lowered for marker in ("error:", "fatal:", "sync aborted", "requires a --resync")):
+      cleaned_message = re.sub(r"\s+", " ", message).strip()[:180]
+      if timestamp > 0:
+        result["events"].append({"kind": "error", "ts": timestamp, "text": cleaned_message})
       if timestamp >= last_error:
         last_error = timestamp
-        result["lastError"] = re.sub(r"\s+", " ", message).strip()[:180]
+        result["lastError"] = cleaned_message
 
+  result["events"] = sorted(result["events"], key=lambda event: event["ts"], reverse=True)[:MAX_SERVICE_EVENTS]
   result["lastSyncTs"] = last_complete
   result["syncing"] = last_start > last_complete
   if last_complete >= last_error:
@@ -200,7 +209,7 @@ def parse_remote_status(output):
   lowered = output.lower()
   if "there are no pending changes" in lowered and "matches the data online" in lowered:
     return "Up to date"
-  if "pending changes" in lowered:
+  if "pending changes" in lowered or "is out of sync with microsoft onedrive" in lowered:
     return "Pending changes"
   lines = [re.sub(r"\s+", " ", line).strip() for line in output.splitlines() if line.strip()]
   return lines[-1][:120] if lines else "Could not determine"
@@ -226,6 +235,7 @@ def remote_check(onedrive_path, confdir, cache):
   if status_exit == 0:
     cache["remoteStatus"] = parse_remote_status(status_output)
   else:
+    cache["remoteStatus"] = "Check failed"
     errors.append("Cloud sync check failed")
 
   cache["remoteCheckedTs"] = int(time.time())
@@ -256,6 +266,7 @@ def build_status(args):
     "syncing": False,
     "lastSyncTs": 0,
     "lastError": "",
+    "events": [],
   }
 
   directory = state_dir()
@@ -284,12 +295,41 @@ def build_status(args):
 
   remote_error = str(cache.get("remoteError", ""))
   local_error = journal["lastError"]
+  files = cache.get("files", [])
+  activity = [
+    {
+      "kind": event["kind"],
+      "ts": event["ts"],
+      "title": event["text"],
+      "detail": "",
+      "path": "",
+    }
+    for event in journal["events"]
+    if event["ts"] > 0
+  ]
+  recent_files = []
+  for row in files:
+    modified_ts = row.get("modifiedTs", 0)
+    if type(modified_ts) is not int or modified_ts <= 0:
+      continue
+    recent_files.append((modified_ts, row))
+  recent_files = sorted(recent_files, key=lambda entry: entry[0], reverse=True)[:MAX_FILE_EVENTS]
+  for modified_ts, row in recent_files:
+    folder = str(row.get("folder", "/") or "/")
+    activity.append({
+      "kind": "file",
+      "ts": modified_ts,
+      "title": str(row.get("name", "") or ""),
+      "detail": "changed in OneDrive" if folder == "/" else "changed in " + folder,
+      "path": str(row.get("path", "") or ""),
+    })
+  activity = sorted(activity, key=lambda row: row["ts"], reverse=True)[:ACTIVITY_LIMIT]
   result = {
     "ok": True,
     "installed": onedrive_path is not None,
     **service,
     "authenticated": authenticated,
-    "syncing": journal["syncing"],
+    "syncing": service["running"] and journal["syncing"],
     "statusText": status_text(onedrive_path is not None, authenticated, service["running"], journal),
     "syncDir": str(sync_dir),
     "lastSyncTs": journal["lastSyncTs"],
@@ -298,7 +338,8 @@ def build_status(args):
     "quotaKnown": cache.get("quotaKnown") is True,
     "remoteStatus": str(cache.get("remoteStatus", "Not checked")),
     "remoteCheckedTs": int(cache.get("remoteCheckedTs", 0) or 0),
-    "files": cache.get("files", []),
+    "files": files,
+    "activity": activity,
     "lastError": local_error or remote_error,
   }
   return result

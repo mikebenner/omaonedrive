@@ -23,6 +23,9 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property color iconColor: oneDrive.authenticated && oneDrive.active ? foreground : dim
   readonly property string toggleHint: oneDrive.active ? "Pause syncing" : "Resume syncing"
+  readonly property string panelStyle: String(root.settings && root.settings.panelStyle
+    ? root.settings.panelStyle : "full").toLowerCase() === "compact" ? "compact" : "full"
+  readonly property var activityRows: Model.activityRows(oneDrive)
 
   function open() {
     root.controller.show()
@@ -78,10 +81,10 @@ Panel {
     owner: root.barIdentity
     bar: root.bar
     open: root.opened
-    centerOnBar: true
+    centerOnBar: false
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(390))
-    contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(620))
+    contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(520))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -110,7 +113,7 @@ Panel {
         Column {
           id: content
           width: panelScroll.width
-          spacing: Style.space(12)
+          spacing: Style.space(10)
 
           PanelHero {
             width: parent.width
@@ -172,72 +175,143 @@ Panel {
             onActivated: oneDrive.login()
           }
 
-          Column {
+          CursorSurface {
+            id: storageBlock
             visible: oneDrive.authenticated
             width: parent.width
-            spacing: Style.space(8)
-
-            InfoPair {
-              label: "Cloud storage"
-              value: Model.usageText(oneDrive.usedBytes, oneDrive.quotaBytes, oneDrive.quotaKnown)
-            }
-            InfoPair {
-              label: "Cloud status"
-              value: oneDrive.remoteStatus
-            }
-            InfoPair {
-              label: "Last sync"
-              value: Model.relativeTime(oneDrive.lastSyncTs)
-            }
-            InfoPair {
-              label: "Starts on login"
-              value: oneDrive.enabled ? "Yes" : "No"
-            }
-          }
-
-          ActionRow {
-            visible: oneDrive.authenticated
-            width: parent.width
-            title: "Check OneDrive cloud"
-            subtitle: oneDrive.remoteCheckedTs > 0
-              ? "Last checked " + Model.relativeTime(oneDrive.remoteCheckedTs)
-              : "Load quota and verify pending changes"
-            icon: "󰑓"
-            actionIcon: "󰑓"
-            actionEnabled: !oneDrive.busy
-            onActivated: oneDrive.refresh(true)
-          }
-
-          ActionRow {
-            visible: oneDrive.syncDir !== ""
-            width: parent.width
-            title: Model.folderName(oneDrive.syncDir)
-            subtitle: oneDrive.syncDir
-            icon: "󰉋"
-            actionIcon: "󰏌"
-            onActivated: oneDrive.openFolder()
-          }
-
-          PanelSeparator {
-            visible: oneDrive.authenticated
             foreground: root.foreground
+            hasCursor: storageMouse.containsMouse && storageMouse.enabled
+            implicitHeight: storageContent.implicitHeight + Style.space(8)
+            height: implicitHeight
+
+            Column {
+              id: storageContent
+              width: parent.width - Style.space(8)
+              anchors.horizontalCenter: parent.horizontalCenter
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(6)
+
+              Item {
+                width: parent.width
+                implicitHeight: Math.max(storageHeader.implicitHeight, storageValue.implicitHeight)
+
+                PanelSectionHeader {
+                  id: storageHeader
+                  text: "STORAGE"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  anchors.left: parent.left
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+
+                Text {
+                  id: storageValue
+                  text: Model.usageShort(oneDrive.usedBytes, oneDrive.quotaBytes, oneDrive.quotaKnown)
+                  color: Qt.darker(root.foreground, 1.4)
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                  anchors.right: parent.right
+                  anchors.rightMargin: Style.space(6)
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+              }
+
+              Rectangle {
+                id: storageTrack
+                width: parent.width
+                height: Style.space(6)
+                radius: Style.cornerRadius
+                color: Style.selectedFillFor(root.foreground, Color.accent)
+                opacity: oneDrive.quotaKnown ? 1.0 : 0.5
+
+                Rectangle {
+                  anchors.left: parent.left
+                  anchors.verticalCenter: parent.verticalCenter
+                  visible: oneDrive.quotaKnown
+                  width: storageTrack.width * Model.usageFraction(
+                    oneDrive.usedBytes, oneDrive.quotaBytes, oneDrive.quotaKnown)
+                  height: storageTrack.height
+                  radius: Style.cornerRadius
+                  color: root.foreground
+                }
+              }
+
+              Item {
+                width: parent.width
+                implicitHeight: Math.max(storageFree.implicitHeight, storageChecked.implicitHeight)
+
+                Text {
+                  id: storageFree
+                  text: oneDrive.quotaKnown
+                    ? Model.freeText(oneDrive.usedBytes, oneDrive.quotaBytes, oneDrive.quotaKnown)
+                    : "Check cloud for exact usage"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  anchors.left: parent.left
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+
+                Text {
+                  id: storageChecked
+                  text: Model.checkedText(oneDrive.remoteCheckedTs)
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  anchors.right: parent.right
+                  anchors.rightMargin: Style.space(6)
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+              }
+            }
+
+            MouseArea {
+              id: storageMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              enabled: !oneDrive.quotaKnown
+              cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+              onClicked: oneDrive.refresh(true)
+            }
           }
 
           Column {
-            visible: oneDrive.authenticated
+            id: activityBlock
+            visible: oneDrive.authenticated && root.panelStyle === "full"
             width: parent.width
-            spacing: Style.space(8)
+            spacing: Style.space(6)
 
-            PanelSectionHeader {
-              text: "RECENT LOCAL FILES"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
+            Item {
+              width: parent.width
+              implicitHeight: Math.max(activityHeader.implicitHeight, activityMeta.implicitHeight)
+
+              PanelSectionHeader {
+                id: activityHeader
+                text: "ACTIVITY"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Text {
+                id: activityMeta
+                text: Model.activityMeta(root.activityRows)
+                color: Qt.darker(root.foreground, 1.4)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(6)
+                anchors.verticalCenter: parent.verticalCenter
+              }
             }
 
             Text {
-              visible: oneDrive.files.length === 0
+              visible: root.activityRows.length === 0
               width: parent.width
-              text: "No local OneDrive files found."
+              text: "No recent OneDrive activity."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
@@ -245,30 +319,69 @@ Panel {
             }
 
             Column {
-              id: fileColumn
-              visible: oneDrive.files.length > 0
+              id: activityColumn
+              visible: root.activityRows.length > 0
               width: parent.width
-              spacing: Style.space(5)
+              spacing: Style.space(3)
 
               Repeater {
-                model: oneDrive.files
-                FileRow {
+                model: root.activityRows
+
+                ActivityRow {
                   required property var modelData
-                  width: fileColumn.width
-                  file: modelData
+                  width: activityColumn.width
+                  rowData: modelData
                 }
               }
             }
           }
 
-          Text {
-            visible: oneDrive.installed
+          Row {
+            id: chipRow
+            visible: root.panelStyle === "full" && oneDrive.installed && oneDrive.authenticated
             width: parent.width
-            text: "R check cloud  ·  P pause/resume  ·  O open folder"
-            color: root.faint
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            horizontalAlignment: Text.AlignHCenter
+            spacing: Style.space(6)
+
+            ActionChip {
+              width: folderChip.visible ? (chipRow.width - chipRow.spacing) / 2 : chipRow.width
+              text: "Check cloud"
+              icon: "󰑓"
+              enabled: !oneDrive.busy
+              onActivated: oneDrive.refresh(true)
+            }
+
+            ActionChip {
+              id: folderChip
+              visible: oneDrive.syncDir !== ""
+              width: (chipRow.width - chipRow.spacing) / 2
+              text: "Folder"
+              icon: "󰉋"
+              onActivated: oneDrive.openFolder()
+            }
+          }
+
+          Column {
+            visible: oneDrive.authenticated && root.panelStyle === "compact"
+            width: parent.width
+            spacing: Style.space(5)
+
+            CompactActionRow {
+              width: parent.width
+              title: "Check cloud"
+              icon: "󰑓"
+              meta: Model.relativeTime(oneDrive.remoteCheckedTs)
+              selected: true
+              actionEnabled: !oneDrive.busy
+              onActivated: oneDrive.refresh(true)
+            }
+
+            CompactActionRow {
+              width: parent.width
+              title: "Open OneDrive folder"
+              icon: "󰉋"
+              actionEnabled: oneDrive.syncDir !== ""
+              onActivated: oneDrive.openFolder()
+            }
           }
         }
       }
@@ -349,21 +462,141 @@ Panel {
     }
   }
 
-  component FileRow: CursorSurface {
-    id: fileRow
-    property var file: null
-    readonly property string fileName: file ? String(file.name || "Untitled") : "Untitled"
+  component ActivityRow: CursorSurface {
+    id: activityRow
+    property var rowData: null
+    readonly property string kind: String(rowData && rowData.kind || "")
+    readonly property bool fileRow: kind === "file"
+    readonly property string title: String(rowData && rowData.title || "")
+    readonly property string detail: String(rowData && rowData.detail || "")
 
     foreground: root.foreground
-    implicitHeight: Math.max(Style.space(46), fileContent.implicitHeight + Style.spacing.rowPaddingX)
+    hasCursor: activityMouse.containsMouse && fileRow
+    implicitHeight: Math.max(Style.space(32), activityContent.implicitHeight + Style.space(6))
     height: implicitHeight
 
+    Rectangle {
+      anchors.left: parent.left
+      anchors.top: parent.top
+      anchors.bottom: parent.bottom
+      anchors.topMargin: Style.space(5)
+      anchors.bottomMargin: Style.space(5)
+      width: Style.space(2)
+      radius: width / 2
+      color: activityRow.fileRow ? root.dim : Color.accent
+    }
+
     MouseArea {
+      id: activityMouse
       anchors.fill: parent
       hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onClicked: oneDrive.openFile(fileRow.file)
+      enabled: activityRow.fileRow
+      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+      onClicked: oneDrive.openFile({
+        path: activityRow.rowData && activityRow.rowData.path || "",
+        name: activityRow.title
+      })
     }
+
+    RowLayout {
+      id: activityContent
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(8)
+      anchors.rightMargin: Style.space(8)
+      spacing: Style.space(7)
+
+      Text {
+        text: Model.activityGlyph(activityRow.rowData)
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.icon
+        Layout.alignment: Qt.AlignVCenter
+      }
+
+      ColumnLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(1)
+
+        Text {
+          Layout.fillWidth: true
+          text: activityRow.title
+          color: activityRow.kind === "error" ? root.urgent : root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          elide: Text.ElideRight
+        }
+
+        Text {
+          visible: activityRow.detail !== ""
+          Layout.fillWidth: true
+          text: activityRow.detail
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideMiddle
+        }
+      }
+
+      Text {
+        text: Model.relativeTime(activityRow.rowData && activityRow.rowData.ts || 0)
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        horizontalAlignment: Text.AlignRight
+        Layout.alignment: Qt.AlignTop | Qt.AlignRight
+      }
+    }
+  }
+
+  component ActionChip: CursorSurface {
+    id: actionChip
+    property string text: ""
+    property string icon: ""
+    signal activated()
+
+    foreground: root.foreground
+    bordered: true
+    hasCursor: chipMouse.containsMouse && actionChip.enabled
+    implicitHeight: Style.space(34)
+    height: implicitHeight
+    opacity: enabled ? 1.0 : 0.5
+
+    Text {
+      anchors.centerIn: parent
+      text: actionChip.icon + "  " + actionChip.text
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+    }
+
+    MouseArea {
+      id: chipMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      enabled: actionChip.enabled
+      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+      onClicked: actionChip.activated()
+    }
+  }
+
+  component CompactActionRow: CursorSurface {
+    id: compactRow
+    property string title: ""
+    property string icon: ""
+    property string meta: ""
+    property bool selected: false
+    property bool actionEnabled: true
+    signal activated()
+
+    foreground: root.foreground
+    current: selected
+    currentFill: Style.selectedFillFor(root.foreground, Color.accent)
+    hasCursor: compactMouse.containsMouse && actionEnabled
+    implicitHeight: Style.space(34)
+    height: implicitHeight
+    opacity: actionEnabled ? 1.0 : 0.5
 
     RowLayout {
       anchors.left: parent.left
@@ -374,62 +607,40 @@ Panel {
       spacing: Style.space(8)
 
       Text {
-        text: Model.fileGlyph(fileRow.fileName)
+        text: compactRow.icon
         color: root.foreground
         font.family: root.fontFamily
-        font.pixelSize: Style.font.icon
+        font.pixelSize: Style.font.bodySmall
         Layout.alignment: Qt.AlignVCenter
       }
 
-      ColumnLayout {
-        id: fileContent
+      Text {
         Layout.fillWidth: true
-        spacing: Style.space(1)
+        text: compactRow.title
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        elide: Text.ElideRight
+      }
 
-        Text {
-          Layout.fillWidth: true
-          text: fileRow.fileName
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.body
-          elide: Text.ElideRight
-        }
-
-        Text {
-          Layout.fillWidth: true
-          text: Model.fileMeta(fileRow.file)
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          elide: Text.ElideMiddle
-        }
+      Text {
+        visible: compactRow.meta !== ""
+        text: compactRow.meta
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        horizontalAlignment: Text.AlignRight
+        Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
       }
     }
-  }
 
-  component InfoPair: Row {
-    property string label: ""
-    property string value: ""
-
-    width: parent.width
-    spacing: Style.space(8)
-
-    Text {
-      width: parent.width * 0.42
-      text: label
-      color: root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.bodySmall
-    }
-
-    Text {
-      width: parent.width * 0.58 - parent.spacing
-      text: value
-      color: root.foreground
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.bodySmall
-      horizontalAlignment: Text.AlignRight
-      elide: Text.ElideLeft
+    MouseArea {
+      id: compactMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      enabled: compactRow.actionEnabled
+      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+      onClicked: compactRow.activated()
     }
   }
 }

@@ -26,6 +26,7 @@ Item {
   property string remoteStatus: "Not checked"
   property double remoteCheckedTs: 0
   property var files: []
+  property var activity: []
   property string actionStatus: ""
   property string lastError: ""
 
@@ -88,6 +89,7 @@ Item {
     remoteStatus = String(parsed.remoteStatus || "Not checked")
     remoteCheckedTs = Number(parsed.remoteCheckedTs || 0)
     files = parsed.files || []
+    activity = parsed.activity || []
     lastError = String(parsed.lastError || "")
   }
 

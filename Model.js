@@ -93,6 +93,28 @@ function usageText(usedBytes, quotaBytes, quotaKnown) {
   return "Check cloud to load"
 }
 
+function freeText(usedBytes, quotaBytes, quotaKnown) {
+  var quota = Number(quotaBytes || 0)
+  if (!quotaKnown || !isFinite(quota) || quota <= 0) return ""
+  var used = Number(usedBytes || 0)
+  if (!isFinite(used)) used = 0
+  return formatBytes(Math.max(0, quota - used)) + " free"
+}
+
+function usageFraction(usedBytes, quotaBytes, quotaKnown) {
+  var quota = Number(quotaBytes || 0)
+  if (!quotaKnown || !isFinite(quota) || quota <= 0) return 0
+  var used = Number(usedBytes || 0)
+  if (!isFinite(used)) used = 0
+  return Math.max(0, Math.min(1, used / quota))
+}
+
+function usageShort(usedBytes, quotaBytes, quotaKnown) {
+  var quota = Number(quotaBytes || 0)
+  if (!quotaKnown || !isFinite(quota) || quota <= 0) return "Not checked"
+  return formatBytes(usedBytes) + " / " + formatBytes(quota)
+}
+
 function relativeTime(timestampSec, nowMs) {
   var timestamp = Number(timestampSec || 0)
   if (!isFinite(timestamp) || timestamp <= 0) return "Never"
@@ -108,6 +130,57 @@ function relativeTime(timestampSec, nowMs) {
   var months = Math.floor(days / 30)
   if (months < 12) return months + "mo ago"
   return Math.floor(days / 365) + "y ago"
+}
+
+function checkedText(remoteCheckedTs, nowMs) {
+  var timestamp = Number(remoteCheckedTs || 0)
+  if (!isFinite(timestamp) || timestamp <= 0) return "never checked"
+  return "checked " + relativeTime(timestamp, nowMs)
+}
+
+function activityRows(status) {
+  if (!status || typeof status !== "object") return []
+  if (Array.isArray(status.activity) && status.activity.length > 0) return status.activity
+  if (!Array.isArray(status.files)) return []
+
+  var rows = []
+  for (var index = 0; index < status.files.length; index++) {
+    var file = status.files[index]
+    if (!file || typeof file !== "object") file = {}
+    var timestamp = Number(file.modifiedTs || 0)
+    if (!isFinite(timestamp)) timestamp = 0
+    var folder = String(file.folder || "/")
+    rows.push({
+      kind: "file",
+      ts: timestamp,
+      title: String(file.name || ""),
+      detail: folder === "/" ? "changed in OneDrive" : "changed in " + folder,
+      path: String(file.path || "")
+    })
+  }
+  return rows.sort(function(left, right) { return right.ts - left.ts }).slice(0, 8)
+}
+
+function activityMeta(rows, nowMs) {
+  if (!Array.isArray(rows) || rows.length === 0) return ""
+  var newest = 0
+  for (var index = 0; index < rows.length; index++) {
+    var row = rows[index]
+    var timestamp = Number(row && row.ts || 0)
+    if (isFinite(timestamp) && timestamp > newest) newest = timestamp
+  }
+  var now = nowMs === undefined ? Date.now() : Number(nowMs)
+  if (!isFinite(now)) now = Date.now()
+  if (newest > 0 && now - newest * 1000 <= 24 * 60 * 60 * 1000) return "last 24 h"
+  return relativeTime(newest, now)
+}
+
+function activityGlyph(row) {
+  if (!row || typeof row !== "object") return ""
+  if (row.kind === "file") return fileGlyph(row.title)
+  if (row.kind === "sync") return "󰄬"
+  if (row.kind === "error") return "󰀪"
+  return ""
 }
 
 function fileMeta(file, nowMs) {
@@ -146,7 +219,14 @@ if (typeof module !== "undefined") {
     fileGlyph: fileGlyph,
     formatBytes: formatBytes,
     usageText: usageText,
+    freeText: freeText,
+    usageFraction: usageFraction,
+    usageShort: usageShort,
     relativeTime: relativeTime,
+    checkedText: checkedText,
+    activityRows: activityRows,
+    activityMeta: activityMeta,
+    activityGlyph: activityGlyph,
     fileMeta: fileMeta,
     folderName: folderName,
     tooltip: tooltip,
