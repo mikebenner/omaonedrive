@@ -9,19 +9,21 @@ Omarchy's Dropbox widget.
 
 ![OmaOneDrive Full panel showing sync status, cloud storage, and a recent activity timeline](docs/images/panel-full.png)
 
-![OmaOneDrive Compact panel showing storage and the two primary actions](docs/images/panel-compact.png)
+![OmaOneDrive Compact panel showing storage and the primary actions](docs/images/panel-compact.png)
 
-![OmaOneDrive Full panel rendered in a second Omarchy theme](docs/images/panel-light-theme.png)
+![OmaOneDrive panel in the resync-required attention state offering the guided repair](docs/images/panel-attention.png)
 
-Captured against a real OneDrive account in a disposable Omarchy VM.
+Captured against a real OneDrive account on a live Omarchy desktop.
 
 ## What it does
 
 - Shows whether OneDrive is monitoring, syncing, paused, or needs attention,
-  including the file currently being uploaded or downloaded while a sync runs.
+  including the file currently being uploaded or downloaded while a sync runs,
+  with a progress percentage when the client reports one.
 - Sends desktop notifications when OneDrive fails, needs reauthentication or a
-  resync, recovers, or when cloud storage crosses 90% full. Can be disabled in
-  the widget settings.
+  resync, recovers, or when cloud storage crosses 90% full. Clicking a failure
+  notification opens the panel or starts the repair. Can be disabled in the
+  widget settings.
 - Offers a guided resync repair when the client demands one: it opens the CLI's
   own interactive `--resync` flow in a terminal, where the CLI asks for
   confirmation before anything runs.
@@ -37,8 +39,10 @@ Captured against a real OneDrive account in a disposable Omarchy VM.
   authorization has expired.
 - Shows used and free cloud storage in a compact usage meter that turns urgent
   past 90% full.
-- Merges successful syncs, service errors, and recent local changes into an
-  honest activity timeline.
+- Merges service errors and recent local changes into an honest activity
+  timeline. Multi-line CLI error blocks are folded into one readable row, and
+  known-benign fallbacks (like WebSocket monitoring being unavailable) never
+  raise attention or clutter the feed.
 - Offers a Full layout with storage and recent activity, and a shorter Compact
   layout with storage and primary actions.
 - Supports arrow-key navigation and Enter activation across panel actions and

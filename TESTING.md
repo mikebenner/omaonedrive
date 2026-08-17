@@ -75,13 +75,19 @@ The functional matrix is:
 16. `panelStyle` Full and Compact both render without clipping.
 17. Desktop notifications fire once per edge: service failure, resync required,
     reauthentication required, recovery, and crossing 90% cloud storage; the
-    `notifications` setting disables all of them.
+    `notifications` setting disables all of them. Clicking a failure
+    notification opens the panel (or starts the resync repair); Omarchy's
+    popups invoke the libnotify "default" action on click.
 18. Resync repair opens `onedrive --sync --resync` in a terminal and the CLI
     prompts for Y/N confirmation before touching anything.
 19. While a sync runs, the hero and tooltip name the file currently uploading
     or downloading, falling back to plain "Syncing…".
 20. The Web chip, compact web row, `W` key, and `web` IPC target all open
     OneDrive on the web.
+21. Benign client fallbacks (WebSocket monitoring unavailable, notSupported
+    subscription errors) appear in neither the activity feed nor lastError,
+    and multi-line CLI error blocks fold their detail lines into one row.
+22. Cloud-check failure lines show the age of the failed attempt.
 
 Real Microsoft authentication should use a disposable test account. The
 2026-08-15 VM run additionally qualified interactive OAuth, real quota and

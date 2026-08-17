@@ -207,6 +207,14 @@ def resume_timer_state():
 
 TRANSFER_SKIP_PREFIXES = ("changes", "differences", "new items", "items", "advertised")
 
+# Multi-line CLI error blocks: "ERROR: ..." then indented detail lines.
+ERROR_DETAIL_RE = re.compile(r"^\s*Error (Message|Reason|Code):\s*(.+)$", re.IGNORECASE)
+
+# The client handles these itself and keeps syncing (WebSocket near-real-time
+# monitoring is unavailable for some account types; the client falls back to
+# interval polling), so they are not worth an attention state or activity row.
+BENIGN_ERROR_MARKERS = ("websocket", "notsupported")
+
 
 def parse_transfer(message):
   match = re.match(r"^\s*(Uploading|Downloading)\b\s*:?\s*(.+)$", message, re.IGNORECASE)
@@ -214,6 +222,10 @@ def parse_transfer(message):
     return None
   direction = "Uploading" if match.group(1).lower() == "uploading" else "Downloading"
   rest = re.sub(r"^(?:new\s+|modified\s+|changed\s+)?file\b\s*:?\s*", "", match.group(2).strip(), flags=re.IGNORECASE)
+  percent = -1
+  percent_match = re.search(r"(\d{1,3})\s*%[^%]*$", rest)
+  if percent_match:
+    percent = min(100, int(percent_match.group(1)))
   rest = re.sub(r"\s*\.\.\..*$", "", rest).strip()
   lowered = rest.lower()
   if not rest or any(lowered.startswith(prefix) for prefix in TRANSFER_SKIP_PREFIXES):
@@ -221,7 +233,7 @@ def parse_transfer(message):
   name = rest.rstrip("/").split("/")[-1].strip()
   if name in ("", ".", "..", "~"):
     return None
-  return direction, name
+  return direction, name, percent
 
 
 def journal_state(service):
@@ -237,6 +249,7 @@ def journal_state(service):
     "events": [],
     "transferFile": "",
     "transferDirection": "",
+    "transferPercent": -1,
   }
   if exit_code != 0:
     return result
@@ -247,6 +260,7 @@ def journal_state(service):
   last_reauth = 0
   last_transfer_ts = 0
   last_transfer = None
+  error_events = []
   for line in output.splitlines():
     try:
       row = json.loads(line)
@@ -258,6 +272,11 @@ def journal_state(service):
     except (TypeError, ValueError):
       timestamp = 0
     lowered = message.lower()
+    detail = ERROR_DETAIL_RE.match(message)
+    if detail and error_events and timestamp - error_events[-1]["ts"] <= 5:
+      merged = error_events[-1]["text"].rstrip() + " " + re.sub(r"\s+", " ", detail.group(2)).strip()
+      error_events[-1]["text"] = merged[:180]
+      continue
     transfer = parse_transfer(message)
     if transfer and timestamp >= last_transfer_ts:
       last_transfer_ts = timestamp
@@ -271,10 +290,7 @@ def journal_state(service):
     if any(marker in lowered for marker in ("error:", "fatal:", "sync aborted", "requires a --resync")):
       cleaned_message = re.sub(r"\s+", " ", message).strip()[:180]
       if timestamp > 0:
-        result["events"].append({"kind": "error", "ts": timestamp, "text": cleaned_message})
-      if timestamp >= last_error:
-        last_error = timestamp
-        result["lastError"] = cleaned_message
+        error_events.append({"kind": "error", "ts": timestamp, "text": cleaned_message})
     if any(marker in lowered for marker in (
       "issue a --reauth",
       "fresh auth token is needed",
@@ -282,12 +298,22 @@ def journal_state(service):
     )):
       last_reauth = max(last_reauth, timestamp)
 
+  kept_errors = [
+    event for event in error_events
+    if not any(marker in event["text"].lower() for marker in BENIGN_ERROR_MARKERS)
+  ]
+  result["events"].extend(kept_errors)
+  if kept_errors:
+    newest = max(kept_errors, key=lambda event: event["ts"])
+    last_error = newest["ts"]
+    result["lastError"] = newest["text"]
+
   result["events"] = sorted(result["events"], key=lambda event: event["ts"], reverse=True)[:MAX_SERVICE_EVENTS]
   result["lastSyncTs"] = last_complete
   result["syncing"] = last_start > last_complete
   result["reauthRequired"] = last_reauth > last_complete
   if result["syncing"] and last_transfer and last_transfer_ts >= last_start:
-    result["transferDirection"], result["transferFile"] = last_transfer
+    result["transferDirection"], result["transferFile"], result["transferPercent"] = last_transfer
   if last_complete >= last_error:
     result["lastError"] = ""
   return result
@@ -461,7 +487,11 @@ def status_text(installed, authenticated, service, journal, resume_at=0):
   if journal["syncing"]:
     transfer_file = journal.get("transferFile", "")
     if transfer_file:
-      return journal.get("transferDirection", "Syncing") + " " + transfer_file
+      text = journal.get("transferDirection", "Syncing") + " " + transfer_file
+      percent = int(journal.get("transferPercent", -1) or -1)
+      if 0 <= percent <= 100:
+        text += " · " + str(percent) + "%"
+      return text
     return "Syncing…"
   return "Monitoring"
 
@@ -482,6 +512,7 @@ def build_status(args):
     "events": [],
     "transferFile": "",
     "transferDirection": "",
+    "transferPercent": -1,
   }
 
   directory = state_dir()

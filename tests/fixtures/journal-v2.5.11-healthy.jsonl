@@ -1,0 +1,11 @@
+{"MESSAGE": "Starting a sync with Microsoft OneDrive", "__REALTIME_TIMESTAMP": "1786788000000000"}
+{"MESSAGE": "Downloading file ./Docs/report.pdf ... done", "__REALTIME_TIMESTAMP": "1786788005000000"}
+{"MESSAGE": "ERROR: Microsoft OneDrive API returned an error with the following message:", "__REALTIME_TIMESTAMP": "1786788006000000"}
+{"MESSAGE": "  Error Message: HTTP request returned status code 400 (Bad Request)", "__REALTIME_TIMESTAMP": "1786788006000000"}
+{"MESSAGE": "  Error Code: notSupported", "__REALTIME_TIMESTAMP": "1786788006000000"}
+{"MESSAGE": "ERROR: Unable to configure WebSocket support to monitor Microsoft Graph API changes in near real-time.", "__REALTIME_TIMESTAMP": "1786788007000000"}
+{"MESSAGE": "  Error Reason: Operation not supported", "__REALTIME_TIMESTAMP": "1786788007000000"}
+{"MESSAGE": "Sync with Microsoft OneDrive is complete", "__REALTIME_TIMESTAMP": "1786788010000000"}
+{"MESSAGE": "Syncing changes from Microsoft OneDrive ...", "__REALTIME_TIMESTAMP": "1786788020000000"}
+{"MESSAGE": "Uploading new file ./Notes/todo.md ... done", "__REALTIME_TIMESTAMP": "1786788022000000"}
+{"MESSAGE": "Downloading file: ./Media/holiday video.mp4 ... 45%", "__REALTIME_TIMESTAMP": "1786788025000000"}

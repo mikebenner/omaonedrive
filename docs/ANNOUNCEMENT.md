@@ -1,27 +1,41 @@
 # Announcement copy
 
-Image to attach: `docs/images/announcement.png` (1600×790, 2:1 — renders full
-width in an X timeline without cropping).
+Image to attach: `docs/images/announcement-discord-v1.5.png` (1785×881, wide
+landscape for Discord; `preview.png` in the repo root is the same composite at
+1200×750 for the plugin listing).
 
 ## Discord
 
-Image to attach: `docs/images/announcement-discord-v1.2.png` (1785×881, wide
-landscape for Discord).
-
 Hey Omarchy folks 👋
 
-I’ve released **OmaOneDrive 1.2** — a OneDrive widget for the Omarchy bar.
+**OmaOneDrive 1.5** is out — the OneDrive widget for the Omarchy bar can now
+tell you when something is wrong and hand you the fix.
 
 It connects to the excellent [OneDrive Client for Linux](https://github.com/abraunegg/onedrive)
 by abraunegg. It doesn’t bundle another sync client; it displays and controls
 your existing `onedrive` CLI and `onedrive.service`.
 
-Features include:
+New since 1.3:
 
-- Sync, service, login, and failure status
+- Desktop notifications when OneDrive fails, needs a resync or
+  reauthentication, recovers, or cloud storage crosses 90% full — clicking one
+  jumps straight to the fix (optional, on by default)
+- Guided resync repair: opens the CLI’s own interactive `--resync` flow, which
+  asks for confirmation before touching anything
+- Live transfer status: the panel names the file currently uploading or
+  downloading, with a percentage when the client reports one
+- The storage meter turns urgent as your drive fills up
+- Open OneDrive on the web straight from the panel
+- Clearer cloud checks — **Refresh storage** vs **Verify sync** — with honest
+  timing hints and error lines that show how old they are
+- A calmer activity feed: known-benign client fallbacks (like WebSocket
+  monitoring being unavailable) no longer masquerade as errors
+
+Longstanding features:
+
+- Sync, service, login, and failure status with distinct bar badges
 - Cloud storage and recent activity
-- Full and Compact layouts
-- Keyboard navigation
+- Full and Compact layouts, keyboard navigation
 - Timed pauses for 15 minutes, 1 hour, or 4 hours with automatic resume
 
 Routine refreshes stay local. Microsoft is only contacted when you explicitly
@@ -48,16 +62,14 @@ Feedback and bug reports are very welcome 🙌
 
 ## Main tweet
 
-> OmaOneDrive — OneDrive status in the Omarchy bar.
+> OmaOneDrive 1.5 — OneDrive status in the Omarchy bar.
 >
-> Sync state, cloud storage and recent activity, with pause and resume built in.
+> Now it notifies you when sync breaks, hands you the guided repair, names the
+> file being transferred, and warns before your storage runs out.
 >
-> It only talks to Microsoft when you ask it to. The 30-second refresh reads
-> your local service and journal, nothing more.
+> It still only talks to Microsoft when you ask it to.
 >
 > github.com/salemsayed/omaonedrive
-
-242 characters plus the link.
 
 ## Shorter variant
 

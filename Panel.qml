@@ -158,6 +158,7 @@ Panel {
 
   Connections {
     target: oneDrive
+    function onOpenPanelRequested() { root.open() }
     function onAuthenticatedChanged() { root.ensureCursor() }
     function onActivityChanged() { root.ensureCursor() }
     function onQuotaKnownChanged() { root.ensureCursor() }
@@ -324,7 +325,7 @@ Panel {
             visible: oneDrive.authenticated && oneDrive.resyncRequired
             width: parent.width
             title: oneDrive.running ? "Pause sync to run resync" : "Run resync repair"
-            subtitle: "Re-scans your whole drive in a terminal · may take a while"
+            subtitle: "Opens a terminal · asks to confirm first"
             icon: "󰑐"
             actionIcon: oneDrive.running ? "" : "󰐊"
             actionEnabled: !oneDrive.running && !oneDrive.busy
@@ -456,7 +457,7 @@ Panel {
                 width: parent.width
                 text: oneDrive.quotaChecking
                   ? "Refreshing storage… may take up to " + String(oneDrive.cloudTimeoutSec) + "s"
-                  : oneDrive.quotaError + " · Retry"
+                  : oneDrive.quotaError + " · " + Model.checkedText(oneDrive.quotaCheckedTs) + " · Retry"
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -600,7 +601,7 @@ Panel {
             subtitle: oneDrive.fullStatusChecking
               ? "Scanning your drive · may take up to " + String(oneDrive.cloudTimeoutSec) + "s"
               : (oneDrive.syncStatusError !== ""
-                ? oneDrive.syncStatusError + " · Retry"
+                ? oneDrive.syncStatusError + " · " + Model.checkedText(oneDrive.syncStatusCheckedTs) + " · Retry"
                 : (oneDrive.remoteStatus === "Not checked"
                   ? "Compares every file with the cloud · may take a while"
                   : oneDrive.remoteStatus + " · " + Model.checkedText(oneDrive.syncStatusCheckedTs)))

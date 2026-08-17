@@ -1,0 +1,6 @@
+{"MESSAGE": "Sync with Microsoft OneDrive is complete", "__REALTIME_TIMESTAMP": "1786788000000000"}
+{"MESSAGE": "Starting a sync with Microsoft OneDrive", "__REALTIME_TIMESTAMP": "1786788010000000"}
+{"MESSAGE": "ERROR: OneDrive returned an error with the following message:", "__REALTIME_TIMESTAMP": "1786788012000000"}
+{"MESSAGE": "  Error Message: HTTP request returned status code 401 (Unauthorized)", "__REALTIME_TIMESTAMP": "1786788012000000"}
+{"MESSAGE": "  Error Reason: The access token has expired", "__REALTIME_TIMESTAMP": "1786788012000000"}
+{"MESSAGE": "ERROR: You will need to issue a --reauth and re-authorise this client to obtain a fresh auth token.", "__REALTIME_TIMESTAMP": "1786788014000000"}
