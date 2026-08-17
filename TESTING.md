@@ -88,6 +88,9 @@ The functional matrix is:
     subscription errors) appear in neither the activity feed nor lastError,
     and multi-line CLI error blocks fold their detail lines into one row.
 22. Cloud-check failure lines show the age of the failed attempt.
+23. Opening the panel retries a failed storage check once when the failure is
+    older than five minutes; a fresh failure is not retried, and Verify sync
+    is never retried automatically.
 
 Real Microsoft authentication should use a disposable test account. The
 2026-08-15 VM run additionally qualified interactive OAuth, real quota and

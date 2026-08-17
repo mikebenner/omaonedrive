@@ -108,6 +108,7 @@ Panel {
   function open() {
     root.controller.show()
     oneDrive.refresh(false)
+    oneDrive.retryStaleQuotaOnOpen()
     Qt.callLater(function() {
       if (root.opened) {
         root.setCenterHoverRevealSuppressed(true)

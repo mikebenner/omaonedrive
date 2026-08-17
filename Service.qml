@@ -59,6 +59,7 @@ Item {
 
   // Must match QUOTA_TIMEOUT_SECONDS / SYNC_STATUS_TIMEOUT_SECONDS in onedrive-status.py.
   readonly property int cloudTimeoutSec: 30
+  readonly property int cloudRetryAfterSec: 300
 
   property string _cloudRequested: ""
   property string _activeCloudMode: ""
@@ -95,6 +96,25 @@ Item {
 
   function checkQuota() {
     requestCloudCheck("quota")
+  }
+
+  // Opening the panel is explicit user intent, so a failed storage result
+  // older than cloudRetryAfterSec is retried once on open. The decision is
+  // deferred until the next status poll returns, because at open() time the
+  // in-memory state may predate the poll the panel just started.
+  // quotaCheckedTs updates even on failure, which blocks another retry until
+  // the window passes. Verify sync is never retried automatically — it is
+  // the expensive full-drive check and stays strictly manual.
+  property bool _quotaRetryQueued: false
+
+  function retryStaleQuotaOnOpen() {
+    _quotaRetryQueued = true
+  }
+
+  function maybeRetryStaleQuota() {
+    if (quotaError === "" || quotaChecking) return
+    if (Date.now() / 1000 - quotaCheckedTs < cloudRetryAfterSec) return
+    checkQuota()
   }
 
   function checkFullStatus() {
@@ -434,6 +454,10 @@ Item {
         var requested = root._cloudRequested
         root._cloudRequested = ""
         Qt.callLater(function() { root.requestCloudCheck(requested) })
+      }
+      if (root._quotaRetryQueued) {
+        root._quotaRetryQueued = false
+        Qt.callLater(function() { root.maybeRetryStaleQuota() })
       }
     }
   }
