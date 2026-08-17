@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.salemsayed.omaonedrive",
   "name": "OmaOneDrive",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "author": "Salem Sayed",
   "license": "MIT",
   "description": "OneDrive status, timed pause controls, cloud storage, and recent sync activity in the Omarchy bar.",
@@ -21,9 +21,17 @@
     "defaults": {
       "refreshIntervalSec": 30,
       "recentFileLimit": 20,
-      "panelStyle": "Full"
+      "panelStyle": "Full",
+      "notifications": true
     },
     "schema": [
+      {
+        "key": "notifications",
+        "type": "boolean",
+        "label": "Desktop notifications",
+        "defaultValue": true,
+        "description": "Notify when OneDrive needs attention, recovers, or cloud storage is almost full."
+      },
       {
         "key": "refreshIntervalSec",
         "type": "integer",

@@ -17,7 +17,14 @@ Captured against a real OneDrive account in a disposable Omarchy VM.
 
 ## What it does
 
-- Shows whether OneDrive is monitoring, syncing, paused, or needs attention.
+- Shows whether OneDrive is monitoring, syncing, paused, or needs attention,
+  including the file currently being uploaded or downloaded while a sync runs.
+- Sends desktop notifications when OneDrive fails, needs reauthentication or a
+  resync, recovers, or when cloud storage crosses 90% full. Can be disabled in
+  the widget settings.
+- Offers a guided resync repair when the client demands one: it opens the CLI's
+  own interactive `--resync` flow in a terminal, where the CLI asks for
+  confirmation before anything runs.
 - Distinguishes two-way, download-only, and upload-only configurations, and
   reports disabled, starting, failed, reauthentication, and resync-required
   service states instead of treating all stopped clients as paused.
@@ -28,14 +35,16 @@ Captured against a real OneDrive account in a disposable Omarchy VM.
 - Opens the CLI's browser-based login flow in a terminal when authentication is
   missing, and offers the CLI's explicit reauthentication flow when an existing
   authorization has expired.
-- Shows used and free cloud storage in a compact usage meter.
+- Shows used and free cloud storage in a compact usage meter that turns urgent
+  past 90% full.
 - Merges successful syncs, service errors, and recent local changes into an
   honest activity timeline.
 - Offers a Full layout with storage and recent activity, and a shorter Compact
   layout with storage and primary actions.
 - Supports arrow-key navigation and Enter activation across panel actions and
   recent files, with the selected row kept in view.
-- Opens the configured sync directory and local files from activity rows.
+- Opens the configured sync directory and local files from activity rows, and
+  OneDrive on the web.
 - Checks Microsoft on demand for exact cloud quota, with a visible spinner and
   countdown while the request is running.
 - Keeps the expensive full-drive sync-status query separate and clearly
@@ -51,15 +60,15 @@ Controls:
 - Right-click checks cloud storage quota.
 - Arrow keys move between available actions and recent files, and `Enter`
   activates the selection. The panel does not print a permanent key legend,
-  but `R` checks cloud storage, `F` runs the optional full-drive status check,
-  `P` pauses/resumes sync, `O` opens the folder, `L` opens login, and `Esc`
-  closes the panel.
+  but `R` refreshes cloud storage, `F` runs the Verify sync check,
+  `P` pauses/resumes sync, `O` opens the folder, `W` opens OneDrive on the
+  web, `L` opens login, and `Esc` closes the panel.
 
 Routine 30-second refreshes are local: they inspect the user service, its
 journal, the configured sync path, and cached presentation data. Only the
-explicit **Check cloud storage** action runs `onedrive --display-quota`. The
-separate **Full cloud status** action runs `onedrive --display-sync-status` and
-may take a while on large drives.
+explicit **Refresh storage** action runs `onedrive --display-quota`. The
+separate **Verify sync** action runs `onedrive --display-sync-status` to
+compare every file with the cloud, and may take a while on large drives.
 
 ## Requirements
 

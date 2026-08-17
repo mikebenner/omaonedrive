@@ -25,7 +25,8 @@ Features include:
 - Timed pauses for 15 minutes, 1 hour, or 4 hours with automatic resume
 
 Routine refreshes stay local. Microsoft is only contacted when you explicitly
-select **Check cloud**, and the plugin never reads or stores your refresh token.
+select **Refresh storage** or **Verify sync**, and the plugin never reads or
+stores your refresh token.
 
 Install the OneDrive client:
 

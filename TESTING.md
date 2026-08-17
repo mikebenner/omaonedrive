@@ -63,9 +63,9 @@ The functional matrix is:
 10. Compact layout: storage plus quota, optional full-status, and folder actions
     without the activity timeline.
 11. Sync folder and activity file rows open through the desktop session.
-12. Arrow keys traverse the available toggle, login, timed-pause presets,
-    storage, activity, and action targets; Enter activates the highlighted
-    target and long activity lists scroll to keep it visible.
+12. Arrow keys traverse the available toggle, login, storage, activity,
+    timed-pause presets, and action targets in visual order; Enter activates
+    the highlighted target and long activity lists scroll to keep it visible.
 13. Clean shell restart: no QML syntax, type, loader, or reference errors, and
     a service still starting after the first poll is detected by the startup
     refresh ramp.
@@ -73,6 +73,15 @@ The functional matrix is:
 15. Bar icon states: missing, login, attention, paused, syncing, and monitoring
     each render distinctly.
 16. `panelStyle` Full and Compact both render without clipping.
+17. Desktop notifications fire once per edge: service failure, resync required,
+    reauthentication required, recovery, and crossing 90% cloud storage; the
+    `notifications` setting disables all of them.
+18. Resync repair opens `onedrive --sync --resync` in a terminal and the CLI
+    prompts for Y/N confirmation before touching anything.
+19. While a sync runs, the hero and tooltip name the file currently uploading
+    or downloading, falling back to plain "Syncing…".
+20. The Web chip, compact web row, `W` key, and `web` IPC target all open
+    OneDrive on the web.
 
 Real Microsoft authentication should use a disposable test account. The
 2026-08-15 VM run additionally qualified interactive OAuth, real quota and

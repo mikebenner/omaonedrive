@@ -94,6 +94,10 @@ OUT
 if [[ ${FAKE_INCOMPLETE_SYNC:-0} == 1 ]]; then
   echo '{"MESSAGE":"Starting a sync with Microsoft OneDrive","__REALTIME_TIMESTAMP":"1786788010000000"}'
 fi
+if [[ ${FAKE_TRANSFER:-0} == 1 ]]; then
+  echo '{"MESSAGE":"Downloading changes from Microsoft OneDrive","__REALTIME_TIMESTAMP":"1786788011000000"}'
+  echo '{"MESSAGE":"Uploading new file ./Docs/report.pdf ... done","__REALTIME_TIMESTAMP":"1786788015000000"}'
+fi
 if [[ ${FAKE_REAUTH:-0} == 1 ]]; then
   echo '{"MESSAGE":"ERROR: You will need to issue a --reauth and re-authorise this client to obtain a fresh auth token.","__REALTIME_TIMESTAMP":"1786788020000000"}'
 fi
@@ -248,6 +252,12 @@ touch "$test_home/.config/onedrive/refresh_token"
 FAKE_ACTIVE=inactive FAKE_INCOMPLETE_SYNC=1 python3 "$root/onedrive-status.py" --limit 5 >"$test_root/paused.json"
 jq -e '.authenticated == true and .running == false and .syncing == false and .statusText == "Sync paused"' "$test_root/paused.json" >/dev/null
 
+FAKE_INCOMPLETE_SYNC=1 FAKE_TRANSFER=1 python3 "$root/onedrive-status.py" --limit 5 >"$test_root/transfer.json"
+jq -e '.syncing == true and .statusText == "Uploading report.pdf"' "$test_root/transfer.json" >/dev/null
+
+FAKE_INCOMPLETE_SYNC=1 python3 "$root/onedrive-status.py" --limit 5 >"$test_root/syncing.json"
+jq -e '.syncing == true and .statusText == "Syncing…"' "$test_root/syncing.json" >/dev/null
+
 resume_at=$(($(date +%s) + 3600))
 FAKE_ACTIVE=inactive FAKE_RESUME_AT="$resume_at" python3 "$root/onedrive-status.py" --limit 5 >"$test_root/timed-pause.json"
 jq -e --argjson resume_at "$resume_at" '
@@ -296,12 +306,18 @@ grep -Fq '["systemctl", "--user", "stop", "onedrive.service"]' "$root/Service.qm
 grep -Fq '["systemctl", "--user", "start", "onedrive.service"]' "$root/Service.qml"
 grep -Fq '["omarchy-launch-terminal", "onedrive"]' "$root/Service.qml"
 grep -Fq '["omarchy-launch-terminal", "onedrive", "--reauth"]' "$root/Service.qml"
+grep -Fq '["omarchy-launch-terminal", "onedrive", "--sync", "--resync"]' "$root/Service.qml"
+grep -Fq '"notify-send"' "$root/Service.qml"
 grep -Fq 'command.push("--quota")' "$root/Service.qml"
 grep -Fq 'command.push("--sync-status")' "$root/Service.qml"
 grep -Fq '"--unit=" + resumeUnit' "$root/Service.qml"
 grep -Fq '"--on-active=" + String(minutes) + "m"' "$root/Service.qml"
 grep -Fq '"/usr/bin/systemctl", "--user", "start", "onedrive.service"' "$root/Service.qml"
-if grep -Eq 'bash.*-c|--resync|--logout|--sync([^a-z-]|$)' "$root/Service.qml"; then
+# Resync may only ever run interactively through omarchy-launch-terminal (the
+# CLI prompts for confirmation there); every direct or scripted mutation stays
+# forbidden.
+if grep -v 'omarchy-launch-terminal' "$root/Service.qml" \
+  | grep -Eq 'bash.*-c|--resync|--logout|--sync([^a-z-]|$)'; then
   echo "service boundary includes an unsafe OneDrive mutation" >&2
   exit 1
 fi

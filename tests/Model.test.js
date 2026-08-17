@@ -27,7 +27,7 @@ test("byte and quota formatting is deterministic", () => {
   assert.equal(Model.formatBytes(1530), "1.53 KB")
   assert.equal(Model.formatBytes(2_000_000_000), "2 GB")
   assert.equal(Model.usageText(1000, 2000, true), "1 KB of 2 KB")
-  assert.equal(Model.usageText(0, 0, false), "Check cloud to load")
+  assert.equal(Model.usageText(0, 0, false), "Refresh storage to load")
 })
 
 test("storage presentation handles known and unknown quotas", () => {
@@ -39,6 +39,9 @@ test("storage presentation handles known and unknown quotas", () => {
   assert.equal(Model.usageFraction(25, 100, false), 0)
   assert.equal(Model.usageShort(42_000_000_000, 100_000_000_000, true), "42 GB / 100 GB")
   assert.equal(Model.usageShort(0, 0, false), "Not checked")
+  assert.equal(Model.usageSevere(90, 100, true), true)
+  assert.equal(Model.usageSevere(89, 100, true), false)
+  assert.equal(Model.usageSevere(95, 100, false), false)
 })
 
 test("relative timestamps and file metadata are readable", () => {
@@ -51,8 +54,14 @@ test("relative timestamps and file metadata are readable", () => {
 })
 
 test("activity rows use payload activity and fall back to files", () => {
-  const activity = [{ kind: "sync", ts: 2000, title: "Sync complete", detail: "", path: "" }]
-  assert.equal(Model.activityRows({ activity, files: [] }), activity)
+  const syncRow = { kind: "sync", ts: 2000, title: "Sync complete", detail: "", path: "" }
+  const fileRow = { kind: "file", ts: 1500, title: "a.md", detail: "changed in Docs", path: "/OneDrive/Docs/a.md" }
+  const errorRow = { kind: "error", ts: 1200, title: "Sync aborted", detail: "", path: "" }
+  assert.deepEqual(
+    Model.activityRows({ activity: [syncRow, fileRow, errorRow], files: [] }),
+    [fileRow, errorRow]
+  )
+  assert.deepEqual(Model.activityRows({ activity: [syncRow], files: [] }), [])
   assert.deepEqual(Model.activityRows({
     activity: [],
     files: [{ modifiedTs: 1000, name: "report.pdf", folder: "Docs", path: "/OneDrive/Docs/report.pdf" }]
@@ -73,6 +82,9 @@ test("activity metadata and glyphs describe recent rows", () => {
   assert.equal(Model.activityGlyph({ kind: "file", title: "report.pdf" }), Model.fileGlyph("report.pdf"))
   assert.equal(Model.activityGlyph({ kind: "sync" }), "󰄬")
   assert.equal(Model.activityGlyph({ kind: "error" }), "󰀪")
+  assert.equal(Model.syncMeta(1000, 1000 * 1000 + 3 * 60 * 1000), "synced 3m ago")
+  assert.equal(Model.syncMeta(1000, 1000 * 1000 + 45 * 1000), "synced Just now")
+  assert.equal(Model.syncMeta(0), "")
 })
 
 test("folder, tooltip, and plugin paths handle spaces", () => {

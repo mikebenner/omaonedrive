@@ -28,31 +28,28 @@ Panel {
   readonly property string panelStyle: String(root.settings && root.settings.panelStyle
     ? root.settings.panelStyle : "full").toLowerCase() === "compact" ? "compact" : "full"
   readonly property var activityRows: Model.activityRows(oneDrive)
+  readonly property bool storageSevere: Model.usageSevere(
+    oneDrive.usedBytes, oneDrive.quotaBytes, oneDrive.quotaKnown)
   readonly property bool headerHasCursor: cursorActive && cursorItem === headerItem
 
   function navigationItems() {
     var items = []
-    if (headerItem.visible && headerItem.keyboardEnabled) items.push(headerItem)
-    if (loginAction.visible && loginAction.keyboardEnabled) items.push(loginAction)
-    if (reauthAction.visible && reauthAction.keyboardEnabled) items.push(reauthAction)
-    if (timedResumeAction.visible && timedResumeAction.keyboardEnabled) items.push(timedResumeAction)
-    if (pausePresets.visible && pause15Chip.keyboardEnabled) items.push(pause15Chip)
-    if (pausePresets.visible && pause60Chip.keyboardEnabled) items.push(pause60Chip)
-    if (pausePresets.visible && pause240Chip.keyboardEnabled) items.push(pause240Chip)
-    if (storageBlock.visible && storageBlock.keyboardEnabled) items.push(storageBlock)
-    if (activityBlock.visible) {
-      for (var index = 0; index < activityRepeater.count; index++) {
-        var row = activityRepeater.itemAt(index)
-        if (row && row.visible && row.keyboardEnabled) items.push(row)
-      }
-    }
-    if (fullStatusAction.visible && fullStatusAction.keyboardEnabled) items.push(fullStatusAction)
-    if (chipRow.visible && checkChip.keyboardEnabled) items.push(checkChip)
-    if (chipRow.visible && folderChip.visible && folderChip.keyboardEnabled) items.push(folderChip)
-    if (compactActions.visible && compactCheck.keyboardEnabled) items.push(compactCheck)
-    if (compactActions.visible && compactFullStatus.keyboardEnabled) items.push(compactFullStatus)
-    if (compactActions.visible && compactFolder.keyboardEnabled) items.push(compactFolder)
+    collectNavigationItems(content, items)
     return items
+  }
+
+  // Walks the content tree in declaration (= visual) order, so new rows join
+  // keyboard navigation by defining keyboardEnabled + keyboardActivate.
+  function collectNavigationItems(item, items) {
+    if (!item || item.visible !== true) return
+    if (item.keyboardEnabled !== undefined && typeof item.keyboardActivate === "function") {
+      if (item.keyboardEnabled === true) items.push(item)
+      return
+    }
+    var children = item.children
+    if (!children) return
+    for (var index = 0; index < children.length; index++)
+      collectNavigationItems(children[index], items)
   }
 
   function setCursor(item) {
@@ -200,6 +197,7 @@ Panel {
         else if (value === "p" || value === "P") oneDrive.toggleRunning()
         else if (value === "o" || value === "O") oneDrive.openFolder()
         else if (value === "l" || value === "L") oneDrive.login()
+        else if (value === "w" || value === "W") oneDrive.openWeb()
       }
 
       Flickable {
@@ -245,20 +243,33 @@ Panel {
                 }
               }
               trailingControl: Component {
-                ToggleSwitch {
-                  id: powerSwitch
+                Row {
+                  spacing: Style.space(6)
                   visible: oneDrive.installed && oneDrive.serviceAvailable && oneDrive.authenticated
-                  checked: oneDrive.active
-                  busy: oneDrive.busy
-                  hasCursor: headerItem.ringVisible
-                  foreground: hero.foreground
-                  onHovered: function(on) { if (on) headerItem.focusHero() }
-                  onToggled: oneDrive.toggleRunning()
 
-                  PanelToolTip {
-                    visible: powerSwitch.containsMouse
-                    text: headerItem.switchHint
-                    fontFamily: hero.fontFamily
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: oneDrive.active ? "Syncing" : "Paused"
+                    color: root.dim
+                    font.family: hero.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  ToggleSwitch {
+                    id: powerSwitch
+                    anchors.verticalCenter: parent.verticalCenter
+                    checked: oneDrive.active
+                    busy: oneDrive.busy
+                    hasCursor: headerItem.ringVisible
+                    foreground: hero.foreground
+                    onHovered: function(on) { if (on) headerItem.focusHero() }
+                    onToggled: oneDrive.toggleRunning()
+
+                    PanelToolTip {
+                      visible: powerSwitch.containsMouse
+                      text: headerItem.switchHint
+                      fontFamily: hero.fontFamily
+                    }
                   }
                 }
               }
@@ -308,6 +319,18 @@ Panel {
             onActivated: oneDrive.reauthenticate()
           }
 
+          ActionRow {
+            id: resyncAction
+            visible: oneDrive.authenticated && oneDrive.resyncRequired
+            width: parent.width
+            title: oneDrive.running ? "Pause sync to run resync" : "Run resync repair"
+            subtitle: "Re-scans your whole drive in a terminal · may take a while"
+            icon: "󰑐"
+            actionIcon: oneDrive.running ? "" : "󰐊"
+            actionEnabled: !oneDrive.running && !oneDrive.busy
+            onActivated: oneDrive.repairResync()
+          }
+
           Text {
             visible: oneDrive.authenticated && oneDrive.serviceAvailable && !oneDrive.enabled
             width: parent.width
@@ -331,52 +354,6 @@ Panel {
             actionIcon: "󰐊"
             actionEnabled: !oneDrive.busy
             onActivated: oneDrive.resume()
-          }
-
-          Column {
-            id: pausePresets
-            visible: oneDrive.authenticated && oneDrive.serviceAvailable
-              && !oneDrive.serviceFailed && !oneDrive.resyncRequired && !oneDrive.reauthRequired
-            width: parent.width
-            spacing: Style.space(6)
-
-            PanelSectionHeader {
-              text: oneDrive.active ? "PAUSE FOR" : "RESUME IN"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
-
-            Row {
-              width: parent.width
-              spacing: Style.space(6)
-
-              ActionChip {
-                id: pause15Chip
-                width: (parent.width - parent.spacing * 2) / 3
-                text: "15 min"
-                icon: "󰔛"
-                enabled: !oneDrive.busy
-                onActivated: oneDrive.pauseFor(15)
-              }
-
-              ActionChip {
-                id: pause60Chip
-                width: (parent.width - parent.spacing * 2) / 3
-                text: "1 hour"
-                icon: "󰔛"
-                enabled: !oneDrive.busy
-                onActivated: oneDrive.pauseFor(60)
-              }
-
-              ActionChip {
-                id: pause240Chip
-                width: (parent.width - parent.spacing * 2) / 3
-                text: "4 hours"
-                icon: "󰔛"
-                enabled: !oneDrive.busy
-                onActivated: oneDrive.pauseFor(240)
-              }
-            }
           }
 
           CursorSurface {
@@ -440,7 +417,7 @@ Panel {
                     oneDrive.usedBytes, oneDrive.quotaBytes, oneDrive.quotaKnown)
                   height: storageTrack.height
                   radius: Style.cornerRadius
-                  color: root.foreground
+                  color: root.storageSevere ? root.urgent : root.foreground
                 }
               }
 
@@ -452,8 +429,9 @@ Panel {
                   id: storageFree
                   text: oneDrive.quotaKnown
                     ? Model.freeText(oneDrive.usedBytes, oneDrive.quotaBytes, oneDrive.quotaKnown)
-                    : "Check cloud for exact usage"
-                  color: root.dim
+                      + (root.storageSevere ? " · almost full" : "")
+                    : "Refresh for exact usage"
+                  color: root.storageSevere ? root.urgent : root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                   anchors.left: parent.left
@@ -477,7 +455,7 @@ Panel {
                 visible: oneDrive.quotaChecking || oneDrive.quotaError !== ""
                 width: parent.width
                 text: oneDrive.quotaChecking
-                  ? "Checking cloud storage… " + String(oneDrive.cloudSecondsRemaining) + "s"
+                  ? "Refreshing storage… may take up to " + String(oneDrive.cloudTimeoutSec) + "s"
                   : oneDrive.quotaError + " · Retry"
                 color: root.dim
                 font.family: root.fontFamily
@@ -528,7 +506,7 @@ Panel {
 
               Text {
                 id: activityMeta
-                text: Model.activityMeta(root.activityRows)
+                text: Model.syncMeta(oneDrive.lastSyncTs) || Model.activityMeta(root.activityRows)
                 color: Qt.darker(root.foreground, 1.4)
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -568,20 +546,65 @@ Panel {
             }
           }
 
+          Column {
+            id: pausePresets
+            visible: oneDrive.authenticated && oneDrive.serviceAvailable
+              && !oneDrive.serviceFailed && !oneDrive.resyncRequired && !oneDrive.reauthRequired
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSectionHeader {
+              text: oneDrive.active ? "PAUSE FOR" : "RESUME IN"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(6)
+
+              ActionChip {
+                id: pause15Chip
+                width: (parent.width - parent.spacing * 2) / 3
+                text: "15 min"
+                icon: "󰔛"
+                enabled: !oneDrive.busy
+                onActivated: oneDrive.pauseFor(15)
+              }
+
+              ActionChip {
+                id: pause60Chip
+                width: (parent.width - parent.spacing * 2) / 3
+                text: "1 hour"
+                icon: "󰔛"
+                enabled: !oneDrive.busy
+                onActivated: oneDrive.pauseFor(60)
+              }
+
+              ActionChip {
+                id: pause240Chip
+                width: (parent.width - parent.spacing * 2) / 3
+                text: "4 hours"
+                icon: "󰔛"
+                enabled: !oneDrive.busy
+                onActivated: oneDrive.pauseFor(240)
+              }
+            }
+          }
+
           ActionRow {
             id: fullStatusAction
             visible: root.panelStyle === "full" && oneDrive.installed && oneDrive.authenticated
             width: parent.width
-            title: oneDrive.fullStatusChecking
-              ? "Checking full cloud status…" : "Full cloud status (optional)"
+            title: oneDrive.fullStatusChecking ? "Verifying sync…" : "Verify sync"
             subtitle: oneDrive.fullStatusChecking
-              ? "Scanning your drive · " + String(oneDrive.cloudSecondsRemaining) + "s remaining"
+              ? "Scanning your drive · may take up to " + String(oneDrive.cloudTimeoutSec) + "s"
               : (oneDrive.syncStatusError !== ""
-                ? "May be slow · " + oneDrive.syncStatusError + " · Retry"
+                ? oneDrive.syncStatusError + " · Retry"
                 : (oneDrive.remoteStatus === "Not checked"
-                  ? "May take a while on large drives"
-                  : oneDrive.remoteStatus + " · may be slow"))
-            icon: "󰑓"
+                  ? "Compares every file with the cloud · may take a while"
+                  : oneDrive.remoteStatus + " · " + Model.checkedText(oneDrive.syncStatusCheckedTs)))
+            icon: "󰍉"
             actionIcon: oneDrive.fullStatusChecking ? "" : "󰑐"
             spinning: oneDrive.fullStatusChecking
             actionEnabled: !oneDrive.busy
@@ -593,12 +616,13 @@ Panel {
             visible: root.panelStyle === "full" && oneDrive.installed && oneDrive.authenticated
             width: parent.width
             spacing: Style.space(6)
+            readonly property int chipCount: folderChip.visible ? 3 : 2
+            readonly property real chipWidth: (width - spacing * (chipCount - 1)) / chipCount
 
             ActionChip {
               id: checkChip
-              width: folderChip.visible ? (chipRow.width - chipRow.spacing) / 2 : chipRow.width
-              text: oneDrive.quotaChecking
-                ? "Checking " + String(oneDrive.cloudSecondsRemaining) + "s" : "Check storage"
+              width: chipRow.chipWidth
+              text: oneDrive.quotaChecking ? "Refreshing…" : "Refresh storage"
               icon: "󰑓"
               spinning: oneDrive.quotaChecking
               enabled: !oneDrive.busy
@@ -608,10 +632,18 @@ Panel {
             ActionChip {
               id: folderChip
               visible: oneDrive.syncDir !== ""
-              width: (chipRow.width - chipRow.spacing) / 2
+              width: chipRow.chipWidth
               text: "Folder"
               icon: "󰉋"
               onActivated: oneDrive.openFolder()
+            }
+
+            ActionChip {
+              id: webChip
+              width: chipRow.chipWidth
+              text: "Web"
+              icon: "󰖟"
+              onActivated: oneDrive.openWeb()
             }
           }
 
@@ -624,12 +656,11 @@ Panel {
             CompactActionRow {
               id: compactCheck
               width: parent.width
-              title: oneDrive.quotaChecking ? "Checking cloud storage…" : "Check cloud storage"
+              title: oneDrive.quotaChecking ? "Refreshing storage…" : "Refresh storage"
               icon: "󰑓"
-              meta: oneDrive.quotaChecking ? String(oneDrive.cloudSecondsRemaining) + "s"
+              meta: oneDrive.quotaChecking ? "up to " + String(oneDrive.cloudTimeoutSec) + "s"
                 : Model.relativeTime(oneDrive.quotaCheckedTs)
               spinning: oneDrive.quotaChecking
-              selected: true
               actionEnabled: !oneDrive.busy
               onActivated: oneDrive.checkQuota()
             }
@@ -637,10 +668,12 @@ Panel {
             CompactActionRow {
               id: compactFullStatus
               width: parent.width
-              title: oneDrive.fullStatusChecking ? "Checking full cloud status…" : "Full status (optional)"
-              icon: "󰑓"
-              meta: oneDrive.fullStatusChecking ? String(oneDrive.cloudSecondsRemaining) + "s"
-                : (oneDrive.syncStatusError !== "" ? "retry" : "may be slow")
+              title: oneDrive.fullStatusChecking ? "Verifying sync…" : "Verify sync"
+              icon: "󰍉"
+              meta: oneDrive.fullStatusChecking ? "up to " + String(oneDrive.cloudTimeoutSec) + "s"
+                : (oneDrive.syncStatusError !== "" ? "retry"
+                  : (oneDrive.remoteStatus === "Not checked" ? "may be slow"
+                    : Model.relativeTime(oneDrive.syncStatusCheckedTs)))
               spinning: oneDrive.fullStatusChecking
               actionEnabled: !oneDrive.busy
               onActivated: oneDrive.checkFullStatus()
@@ -653,6 +686,14 @@ Panel {
               icon: "󰉋"
               actionEnabled: oneDrive.syncDir !== ""
               onActivated: oneDrive.openFolder()
+            }
+
+            CompactActionRow {
+              id: compactWeb
+              width: parent.width
+              title: "Open OneDrive on the web"
+              icon: "󰖟"
+              onActivated: oneDrive.openWeb()
             }
           }
         }

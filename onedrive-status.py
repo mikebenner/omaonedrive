@@ -205,6 +205,25 @@ def resume_timer_state():
   return next_usec // 1_000_000 if next_usec > 0 else 0
 
 
+TRANSFER_SKIP_PREFIXES = ("changes", "differences", "new items", "items", "advertised")
+
+
+def parse_transfer(message):
+  match = re.match(r"^\s*(Uploading|Downloading)\b\s*:?\s*(.+)$", message, re.IGNORECASE)
+  if not match:
+    return None
+  direction = "Uploading" if match.group(1).lower() == "uploading" else "Downloading"
+  rest = re.sub(r"^(?:new\s+|modified\s+|changed\s+)?file\b\s*:?\s*", "", match.group(2).strip(), flags=re.IGNORECASE)
+  rest = re.sub(r"\s*\.\.\..*$", "", rest).strip()
+  lowered = rest.lower()
+  if not rest or any(lowered.startswith(prefix) for prefix in TRANSFER_SKIP_PREFIXES):
+    return None
+  name = rest.rstrip("/").split("/")[-1].strip()
+  if name in ("", ".", "..", "~"):
+    return None
+  return direction, name
+
+
 def journal_state(service):
   exit_code, output = command_output(
     ["journalctl", "--user", "--unit", service, "--lines", "120", "--no-pager", "--output", "json"],
@@ -216,6 +235,8 @@ def journal_state(service):
     "lastError": "",
     "reauthRequired": False,
     "events": [],
+    "transferFile": "",
+    "transferDirection": "",
   }
   if exit_code != 0:
     return result
@@ -224,6 +245,8 @@ def journal_state(service):
   last_complete = 0
   last_error = 0
   last_reauth = 0
+  last_transfer_ts = 0
+  last_transfer = None
   for line in output.splitlines():
     try:
       row = json.loads(line)
@@ -235,6 +258,10 @@ def journal_state(service):
     except (TypeError, ValueError):
       timestamp = 0
     lowered = message.lower()
+    transfer = parse_transfer(message)
+    if transfer and timestamp >= last_transfer_ts:
+      last_transfer_ts = timestamp
+      last_transfer = transfer
     if "starting a sync with microsoft onedrive" in lowered or "syncing changes from microsoft onedrive" in lowered:
       last_start = max(last_start, timestamp)
     if "sync with microsoft onedrive is complete" in lowered:
@@ -259,6 +286,8 @@ def journal_state(service):
   result["lastSyncTs"] = last_complete
   result["syncing"] = last_start > last_complete
   result["reauthRequired"] = last_reauth > last_complete
+  if result["syncing"] and last_transfer and last_transfer_ts >= last_start:
+    result["transferDirection"], result["transferFile"] = last_transfer
   if last_complete >= last_error:
     result["lastError"] = ""
   return result
@@ -430,6 +459,9 @@ def status_text(installed, authenticated, service, journal, resume_at=0):
   if not service["running"]:
     return "Sync paused"
   if journal["syncing"]:
+    transfer_file = journal.get("transferFile", "")
+    if transfer_file:
+      return journal.get("transferDirection", "Syncing") + " " + transfer_file
     return "Syncing…"
   return "Monitoring"
 
@@ -448,6 +480,8 @@ def build_status(args):
     "lastError": "",
     "reauthRequired": False,
     "events": [],
+    "transferFile": "",
+    "transferDirection": "",
   }
 
   directory = state_dir()

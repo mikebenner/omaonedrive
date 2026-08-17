@@ -115,6 +115,14 @@ BarWidget {
       if (root.service) root.service.openFolder()
       return "ok"
     }
+    function web(): string {
+      if (root.service) root.service.openWeb()
+      return "ok"
+    }
+    function resync(): string {
+      if (root.service) root.service.repairResync()
+      return "ok"
+    }
     function status(): string { return root.service ? root.service.statusText : "Checking…" }
   }
 

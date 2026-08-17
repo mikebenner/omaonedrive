@@ -102,7 +102,7 @@ function formatBytes(bytes) {
 function usageText(usedBytes, quotaBytes, quotaKnown) {
   if (quotaKnown && Number(quotaBytes || 0) > 0)
     return formatBytes(usedBytes) + " of " + formatBytes(quotaBytes)
-  return "Check cloud to load"
+  return "Refresh storage to load"
 }
 
 function freeText(usedBytes, quotaBytes, quotaKnown) {
@@ -119,6 +119,12 @@ function usageFraction(usedBytes, quotaBytes, quotaKnown) {
   var used = Number(usedBytes || 0)
   if (!isFinite(used)) used = 0
   return Math.max(0, Math.min(1, used / quota))
+}
+
+var QUOTA_WARNING_FRACTION = 0.9
+
+function usageSevere(usedBytes, quotaBytes, quotaKnown) {
+  return usageFraction(usedBytes, quotaBytes, quotaKnown) >= QUOTA_WARNING_FRACTION
 }
 
 function usageShort(usedBytes, quotaBytes, quotaKnown) {
@@ -152,7 +158,8 @@ function checkedText(remoteCheckedTs, nowMs) {
 
 function activityRows(status) {
   if (!status || typeof status !== "object") return []
-  if (Array.isArray(status.activity) && status.activity.length > 0) return status.activity
+  if (Array.isArray(status.activity) && status.activity.length > 0)
+    return status.activity.filter(function(row) { return !row || row.kind !== "sync" })
   if (!Array.isArray(status.files)) return []
 
   var rows = []
@@ -185,6 +192,12 @@ function activityMeta(rows, nowMs) {
   if (!isFinite(now)) now = Date.now()
   if (newest > 0 && now - newest * 1000 <= 24 * 60 * 60 * 1000) return "last 24 h"
   return relativeTime(newest, now)
+}
+
+function syncMeta(lastSyncTs, nowMs) {
+  var timestamp = Number(lastSyncTs || 0)
+  if (!isFinite(timestamp) || timestamp <= 0) return ""
+  return "synced " + relativeTime(timestamp, nowMs)
 }
 
 function activityGlyph(row) {
@@ -243,11 +256,13 @@ if (typeof module !== "undefined") {
     usageText: usageText,
     freeText: freeText,
     usageFraction: usageFraction,
+    usageSevere: usageSevere,
     usageShort: usageShort,
     relativeTime: relativeTime,
     checkedText: checkedText,
     activityRows: activityRows,
     activityMeta: activityMeta,
+    syncMeta: syncMeta,
     activityGlyph: activityGlyph,
     fileMeta: fileMeta,
     folderName: folderName,

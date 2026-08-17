@@ -43,6 +43,10 @@ Item {
   property string actionStatus: ""
   property string lastError: ""
 
+  readonly property bool notificationsEnabled: {
+    var value = setting("notifications", true)
+    return value === true || String(value).toLowerCase() === "true"
+  }
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 30, 10, 3600)
   readonly property int recentFileLimit: intSetting("recentFileLimit", 20, 5, 50)
   readonly property string helperPath: Model.filePath(Qt.resolvedUrl("onedrive-status.py"))
@@ -53,9 +57,11 @@ Item {
   readonly property bool quotaChecking: _activeCloudMode === "quota" && statusProcess.running
   readonly property bool fullStatusChecking: _activeCloudMode === "sync-status" && statusProcess.running
 
+  // Must match QUOTA_TIMEOUT_SECONDS / SYNC_STATUS_TIMEOUT_SECONDS in onedrive-status.py.
+  readonly property int cloudTimeoutSec: 30
+
   property string _cloudRequested: ""
   property string _activeCloudMode: ""
-  property int cloudSecondsRemaining: 0
   property string _statusOutput: ""
   property string _statusError: ""
   property string _controlOutput: ""
@@ -104,13 +110,6 @@ Item {
     startStatusProcess(mode)
   }
 
-  function updateCloudProgress() {
-    if (_activeCloudMode === "quota")
-      actionStatus = "Checking cloud storage… " + String(cloudSecondsRemaining) + "s"
-    else if (_activeCloudMode === "sync-status")
-      actionStatus = "Checking full cloud status… " + String(cloudSecondsRemaining) + "s"
-  }
-
   function startStatusProcess(cloudMode) {
     _activeCloudMode = cloudMode
     _statusOutput = ""
@@ -121,12 +120,18 @@ Item {
     else if (cloudMode === "sync-status") command.push("--sync-status")
     if (cloudMode !== "") {
       actionStatusTimer.stop()
-      cloudSecondsRemaining = 30
-      updateCloudProgress()
-      cloudCountdown.start()
+      actionStatus = (cloudMode === "quota" ? "Refreshing storage" : "Verifying sync")
+        + "… may take up to " + String(cloudTimeoutSec) + "s"
     }
     statusProcess.command = command
     statusProcess.running = true
+  }
+
+  function notify(urgency, summary, body) {
+    if (!notificationsEnabled) return
+    Quickshell.execDetached([
+      "notify-send", "--app-name=OmaOneDrive", "--urgency=" + urgency, summary, body
+    ])
   }
 
   function applyStatus(raw) {
@@ -135,6 +140,11 @@ Item {
       lastError = parsed.lastError || "Failed to read OneDrive status"
       return
     }
+    var wasFailed = serviceFailed
+    var wasResync = resyncRequired
+    var wasReauth = reauthRequired
+    var hadAttention = serviceFailed || resyncRequired || reauthRequired
+    var wasStorageSevere = Model.usageSevere(usedBytes, quotaBytes, quotaKnown)
     installed = parsed.installed === true
     serviceAvailable = parsed.serviceAvailable === true
     running = parsed.running === true
@@ -165,6 +175,22 @@ Item {
     files = parsed.files || []
     activity = parsed.activity || []
     lastError = String(parsed.lastError || "")
+
+    if (resyncRequired && !wasResync)
+      notify("critical", "OneDrive needs a resync",
+        "Syncing stopped until the resync repair runs. Open the OneDrive panel to start it.")
+    else if (serviceFailed && !wasFailed)
+      notify("critical", "OneDrive sync failed",
+        lastError !== "" ? lastError : "The OneDrive service entered a failed state.")
+    if (reauthRequired && !wasReauth)
+      notify("critical", "OneDrive needs reauthentication",
+        "Sign in again from the OneDrive panel to keep syncing.")
+    if (hadAttention && !serviceFailed && !resyncRequired && !reauthRequired)
+      notify("normal", "OneDrive recovered", "Syncing is healthy again.")
+    if (!wasStorageSevere && Model.usageSevere(usedBytes, quotaBytes, quotaKnown))
+      notify("normal", "OneDrive storage almost full",
+        Model.freeText(usedBytes, quotaBytes, quotaKnown) + " of "
+          + Model.formatBytes(quotaBytes) + " remains.")
   }
 
   function elideStatus(text) {
@@ -184,6 +210,17 @@ Item {
     Quickshell.execDetached(["omarchy-launch-terminal", "onedrive", "--reauth"])
     actionStatus = "Opened OneDrive reauthentication"
     actionStatusTimer.restart()
+  }
+
+  function repairResync() {
+    if (!installed || running || busy) return
+    Quickshell.execDetached(["omarchy-launch-terminal", "onedrive", "--sync", "--resync"])
+    actionStatus = "Opened OneDrive resync repair"
+    actionStatusTimer.restart()
+  }
+
+  function openWeb() {
+    Quickshell.execDetached(["uwsm-app", "--", "xdg-open", "https://onedrive.live.com/"])
   }
 
   function pause() {
@@ -319,17 +356,6 @@ Item {
     onTriggered: root.actionStatus = ""
   }
 
-  Timer {
-    id: cloudCountdown
-    interval: 1000
-    repeat: true
-    onTriggered: {
-      root.cloudSecondsRemaining = Math.max(0, root.cloudSecondsRemaining - 1)
-      root.updateCloudProgress()
-      if (root.cloudSecondsRemaining === 0) stop()
-    }
-  }
-
   Process {
     id: statusProcess
     running: false
@@ -347,8 +373,6 @@ Item {
     onExited: function(exitCode) {
       var cloudMode = root._activeCloudMode
       root.refreshing = false
-      cloudCountdown.stop()
-      root.cloudSecondsRemaining = 0
       var stdout = String(statusStdout.text || root._statusOutput || "")
       var stderr = String(statusStderr.text || root._statusError || "")
       if (exitCode === 0) root.applyStatus(stdout)
@@ -356,9 +380,9 @@ Item {
       if (cloudMode !== "") {
         if (exitCode !== 0) root.actionStatus = root.lastError
         else if (cloudMode === "quota")
-          root.actionStatus = root.quotaError === "" ? "Cloud storage updated" : root.quotaError
+          root.actionStatus = root.quotaError === "" ? "Storage refreshed" : root.quotaError
         else root.actionStatus = root.syncStatusError === ""
-          ? "Full cloud status updated" : root.syncStatusError
+          ? "Sync verified" : root.syncStatusError
         actionStatusTimer.restart()
       }
       root._activeCloudMode = ""
