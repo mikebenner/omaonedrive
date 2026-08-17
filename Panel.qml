@@ -572,14 +572,15 @@ Panel {
             id: fullStatusAction
             visible: root.panelStyle === "full" && oneDrive.installed && oneDrive.authenticated
             width: parent.width
-            title: oneDrive.fullStatusChecking ? "Checking full cloud status…" : "Full cloud status"
+            title: oneDrive.fullStatusChecking
+              ? "Checking full cloud status…" : "Full cloud status (optional)"
             subtitle: oneDrive.fullStatusChecking
               ? "Scanning your drive · " + String(oneDrive.cloudSecondsRemaining) + "s remaining"
               : (oneDrive.syncStatusError !== ""
-                ? oneDrive.syncStatusError + " · Retry"
+                ? "May be slow · " + oneDrive.syncStatusError + " · Retry"
                 : (oneDrive.remoteStatus === "Not checked"
-                  ? "Optional · may take a while on large drives"
-                  : oneDrive.remoteStatus + " · optional; may be slow"))
+                  ? "May take a while on large drives"
+                  : oneDrive.remoteStatus + " · may be slow"))
             icon: "󰑓"
             actionIcon: oneDrive.fullStatusChecking ? "" : "󰑐"
             spinning: oneDrive.fullStatusChecking
