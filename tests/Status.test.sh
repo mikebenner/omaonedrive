@@ -146,6 +146,8 @@ jq -e '
   and .quotaBytes == 10000000000
   and .remoteStatus == "Up to date"
   and .remoteCheckedTs > 0
+  and .remoteError == ""
+  and .lastError == ""
 ' "$remote_output" >/dev/null
 [[ $(grep -c -- '--display-quota' "$FAKE_ONEDRIVE_LOG") == 1 ]]
 [[ $(grep -c -- '--display-sync-status' "$FAKE_ONEDRIVE_LOG") == 1 ]]
@@ -164,10 +166,40 @@ jq -e '.quotaKnown == true and .remoteStatus == "Pending changes"' "$cached_outp
 
 FAKE_STATUS_FAILURE=1 python3 "$root/onedrive-status.py" --remote --limit 5 >"$test_root/remote-failure.json"
 jq -e '
-  .remoteStatus == "Check failed"
-  and .lastError == "Cloud sync check failed"
+  .remoteStatus == "Pending changes"
+  and .remoteError == "Cloud sync check failed"
+  and .lastError == ""
   and .quotaKnown == true
 ' "$test_root/remote-failure.json" >/dev/null
+
+python3 "$root/onedrive-status.py" --limit 5 >"$test_root/cached-failure.json"
+jq -e '
+  .remoteStatus == "Pending changes"
+  and .remoteError == "Cloud sync check failed"
+  and .lastError == ""
+' "$test_root/cached-failure.json" >/dev/null
+
+python3 "$root/onedrive-status.py" --remote --limit 5 >"$test_root/remote-recovered.json"
+jq -e '
+  .remoteStatus == "Up to date"
+  and .remoteError == ""
+  and .lastError == ""
+' "$test_root/remote-recovered.json" >/dev/null
+
+python3 - "$root/onedrive-status.py" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("omaonedrive_status", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+exit_code, output = module.command_output(
+  [sys.executable, "-c", "import time; print('partial', flush=True); time.sleep(1)"],
+  timeout=0.05,
+)
+assert exit_code == 124
+assert output == "partial"
+PY
 
 rm "$test_home/.config/onedrive/refresh_token"
 FAKE_ACTIVE=inactive python3 "$root/onedrive-status.py" --limit 5 >"$test_root/login.json"

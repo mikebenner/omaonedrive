@@ -37,6 +37,9 @@ Captured against a real OneDrive account in a disposable Omarchy VM.
   recent files, with the selected row kept in view.
 - Opens the configured sync directory and local files from activity rows.
 - Checks Microsoft on demand for exact cloud quota and pending changes.
+- Runs the two cloud queries concurrently with bounded timeouts. A temporary
+  Microsoft Graph failure keeps the last good result and offers a quiet retry
+  without marking the local sync service unhealthy.
 - Caches only presentation data. It never reads, copies, prints, or stores the
   OneDrive refresh token.
 

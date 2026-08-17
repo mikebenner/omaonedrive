@@ -33,6 +33,7 @@ Item {
   property bool quotaKnown: false
   property string remoteStatus: "Not checked"
   property double remoteCheckedTs: 0
+  property string remoteError: ""
   property var files: []
   property var activity: []
   property string actionStatus: ""
@@ -111,6 +112,7 @@ Item {
     quotaKnown = parsed.quotaKnown === true
     remoteStatus = String(parsed.remoteStatus || "Not checked")
     remoteCheckedTs = Number(parsed.remoteCheckedTs || 0)
+    remoteError = String(parsed.remoteError || "")
     files = parsed.files || []
     activity = parsed.activity || []
     lastError = String(parsed.lastError || "")
@@ -290,7 +292,7 @@ Item {
       else root.lastError = root.elideStatus(stderr || stdout || "Could not read OneDrive status")
       if (root.actionStatus === "Checking OneDrive cloud…") {
         root.actionStatus = exitCode === 0
-          ? (root.lastError === "" ? "Cloud status updated" : "Cloud check incomplete")
+          ? (root.remoteError === "" ? "Cloud status updated" : root.remoteError)
           : root.lastError
         actionStatusTimer.restart()
       }

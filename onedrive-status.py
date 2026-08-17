@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -31,7 +32,11 @@ def command_output(command, timeout=4):
       text=True,
       timeout=timeout,
     )
-  except (OSError, subprocess.TimeoutExpired):
+  except subprocess.TimeoutExpired as error:
+    stdout = error.stdout.decode(errors="replace") if isinstance(error.stdout, bytes) else (error.stdout or "")
+    stderr = error.stderr.decode(errors="replace") if isinstance(error.stderr, bytes) else (error.stderr or "")
+    return 124, (stdout + stderr).strip()
+  except OSError:
     return 1, ""
   return completed.returncode, (completed.stdout + completed.stderr).strip()
 
@@ -313,26 +318,25 @@ def parse_remote_status(output):
 
 def remote_check(onedrive_path, confdir, cache):
   errors = []
-  quota_exit, quota_output = command_output(
-    [onedrive_path, "--confdir", str(confdir), "--display-quota"],
-    timeout=20,
-  )
+  quota_command = [onedrive_path, "--confdir", str(confdir), "--display-quota"]
+  status_command = [onedrive_path, "--confdir", str(confdir), "--display-sync-status"]
+  with ThreadPoolExecutor(max_workers=2) as executor:
+    quota_future = executor.submit(command_output, quota_command, 20)
+    status_future = executor.submit(command_output, status_command, 30)
+    quota_exit, quota_output = quota_future.result()
+    status_exit, status_output = status_future.result()
+
   quota = parse_quota(quota_output) if quota_exit == 0 else None
   if quota:
     cache["usedBytes"], cache["quotaBytes"] = quota
     cache["quotaKnown"] = True
   else:
-    errors.append("Cloud quota check failed")
+    errors.append("Cloud quota check timed out" if quota_exit == 124 else "Cloud quota check failed")
 
-  status_exit, status_output = command_output(
-    [onedrive_path, "--confdir", str(confdir), "--display-sync-status"],
-    timeout=30,
-  )
   if status_exit == 0:
     cache["remoteStatus"] = parse_remote_status(status_output)
   else:
-    cache["remoteStatus"] = "Check failed"
-    errors.append("Cloud sync check failed")
+    errors.append("Microsoft Graph check timed out" if status_exit == 124 else "Cloud sync check failed")
 
   cache["remoteCheckedTs"] = int(time.time())
   cache["remoteError"] = "; ".join(errors)
@@ -401,6 +405,8 @@ def build_status(args):
     os.chmod(lock_path, 0o600)
     fcntl.flock(lock, fcntl.LOCK_EX)
     cache = load_cache(cache_path)
+    if cache.get("remoteStatus") == "Check failed":
+      cache["remoteStatus"] = "Not checked"
     now = int(time.time())
     cached_sync_dir = str(cache.get("scanSyncDir", ""))
     cached_limit = int(cache.get("scanLimit", 0) or 0)
@@ -416,7 +422,6 @@ def build_status(args):
 
     save_cache(cache_path, cache)
 
-  remote_error = str(cache.get("remoteError", ""))
   local_error = journal["lastError"]
   if service["resyncRequired"] and not local_error:
     local_error = "OneDrive stopped because a manual --resync is required"
@@ -469,9 +474,10 @@ def build_status(args):
     "quotaKnown": cache.get("quotaKnown") is True,
     "remoteStatus": str(cache.get("remoteStatus", "Not checked")),
     "remoteCheckedTs": int(cache.get("remoteCheckedTs", 0) or 0),
+    "remoteError": str(cache.get("remoteError", "")),
     "files": files,
     "activity": activity,
-    "lastError": local_error or remote_error,
+    "lastError": local_error,
   }
   return result
 

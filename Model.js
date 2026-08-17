@@ -38,6 +38,7 @@ function defaultStatus() {
     quotaKnown: false,
     remoteStatus: "Not checked",
     remoteCheckedTs: 0,
+    remoteError: "",
     files: [],
     lastError: ""
   }

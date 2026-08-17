@@ -468,6 +468,27 @@ Panel {
                   anchors.verticalCenter: parent.verticalCenter
                 }
               }
+
+              Text {
+                id: remoteWarning
+                visible: oneDrive.remoteError !== ""
+                width: parent.width
+                text: oneDrive.remoteError + " · Retry"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.underline: remoteWarningMouse.containsMouse
+                wrapMode: Text.Wrap
+
+                MouseArea {
+                  id: remoteWarningMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  enabled: !oneDrive.busy
+                  cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                  onClicked: oneDrive.refresh(true)
+                }
+              }
             }
 
             MouseArea {

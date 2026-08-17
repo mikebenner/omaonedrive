@@ -17,8 +17,9 @@ omarchy plugin validate .
 `tests/run` covers JavaScript presentation helpers plus a fake OneDrive CLI,
 systemd user service and timed-resume timer, journal, authentication state,
 local files, remote quota, remote sync status, cache reuse, and private state
-permissions. The fake test also proves that a routine refresh does not run
-either cloud query.
+permissions. It also covers cloud failure recovery and timeout classification,
+proves that the last successful remote result survives a failed check, and
+proves that a routine refresh does not run either cloud query.
 
 ## Disposable VM acceptance
 
@@ -51,7 +52,10 @@ The functional matrix is:
 7. Download-only, upload-only, and two-way modes appear accurately in the hero
    and tooltip.
 8. Explicit cloud check: storage meter, pending-change result, and cached check
-   time; unknown quota remains a clearly actionable state.
+   time; unknown quota remains a clearly actionable state. Disconnect the
+   network during a check and confirm the last good values remain, the local
+   service does not enter an error state, and the subtle retry notice clears
+   after a successful check.
 9. Full layout: storage, bounded activity timeline, cloud/folder chips, and
    clickable local-file activity rows.
 10. Compact layout: storage plus cloud and folder actions without the activity
