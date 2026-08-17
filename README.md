@@ -36,10 +36,11 @@ Captured against a real OneDrive account in a disposable Omarchy VM.
 - Supports arrow-key navigation and Enter activation across panel actions and
   recent files, with the selected row kept in view.
 - Opens the configured sync directory and local files from activity rows.
-- Checks Microsoft on demand for exact cloud quota and pending changes.
-- Runs the two cloud queries concurrently with bounded timeouts. A temporary
-  Microsoft Graph failure keeps the last good result and offers a quiet retry
-  without marking the local sync service unhealthy.
+- Checks Microsoft on demand for exact cloud quota, with a visible spinner and
+  countdown while the request is running.
+- Keeps the expensive full-drive sync-status query separate and clearly
+  optional. Each check retains its own last good result and retry state without
+  marking the local sync service unhealthy.
 - Caches only presentation data. It never reads, copies, prints, or stores the
   OneDrive refresh token.
 
@@ -47,16 +48,18 @@ Controls:
 
 - Left-click toggles the panel.
 - Middle-click opens the configured OneDrive folder.
-- Right-click checks cloud quota and pending changes.
+- Right-click checks cloud storage quota.
 - Arrow keys move between available actions and recent files, and `Enter`
   activates the selection. The panel does not print a permanent key legend,
-  but `R` checks the cloud, `P` pauses/resumes sync, `O` opens the folder, `L`
-  opens login, and `Esc` closes the panel.
+  but `R` checks cloud storage, `F` runs the optional full-drive status check,
+  `P` pauses/resumes sync, `O` opens the folder, `L` opens login, and `Esc`
+  closes the panel.
 
 Routine 30-second refreshes are local: they inspect the user service, its
 journal, the configured sync path, and cached presentation data. Only the
-explicit **Check OneDrive cloud** action runs `onedrive --display-quota` and
-`onedrive --display-sync-status`.
+explicit **Check cloud storage** action runs `onedrive --display-quota`. The
+separate **Full cloud status** action runs `onedrive --display-sync-status` and
+may take a while on large drives.
 
 ## Requirements
 

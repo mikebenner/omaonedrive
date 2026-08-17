@@ -29,6 +29,10 @@ case " $* " in
     printf "Config option 'download_only'                 = %s\n" "${FAKE_DOWNLOAD_ONLY:-true}"
     ;;
   *" --display-quota "*)
+    if [[ ${FAKE_QUOTA_FAILURE:-0} == 1 ]]; then
+      echo "OneDrive quota query failed" >&2
+      exit 8
+    fi
     cat <<'OUT'
 Remaining: 8.00 GB (8000000000 bytes)
 State:     normal
@@ -144,7 +148,11 @@ jq -e '
   .quotaKnown == true
   and .usedBytes == 2000000000
   and .quotaBytes == 10000000000
+  and .quotaCheckedTs > 0
+  and .quotaError == ""
   and .remoteStatus == "Up to date"
+  and .syncStatusCheckedTs > 0
+  and .syncStatusError == ""
   and .remoteCheckedTs > 0
   and .remoteError == ""
   and .lastError == ""
@@ -152,21 +160,27 @@ jq -e '
 [[ $(grep -c -- '--display-quota' "$FAKE_ONEDRIVE_LOG") == 1 ]]
 [[ $(grep -c -- '--display-sync-status' "$FAKE_ONEDRIVE_LOG") == 1 ]]
 
-FAKE_PENDING_CHANGES=1 python3 "$root/onedrive-status.py" --remote --limit 5 >"$test_root/pending.json"
-jq -e '.remoteStatus == "Pending changes"' "$test_root/pending.json" >/dev/null
+FAKE_PENDING_CHANGES=1 python3 "$root/onedrive-status.py" --sync-status --limit 5 >"$test_root/pending.json"
+jq -e '
+  .remoteStatus == "Pending changes"
+  and .syncStatusError == ""
+  and .quotaError == ""
+' "$test_root/pending.json" >/dev/null
 
 cached_output="$test_root/cached.json"
 python3 "$root/onedrive-status.py" --limit 5 >"$cached_output"
 jq -e '.quotaKnown == true and .remoteStatus == "Pending changes"' "$cached_output" >/dev/null
-[[ $(grep -c -- '--display-quota' "$FAKE_ONEDRIVE_LOG") == 2 ]]
+[[ $(grep -c -- '--display-quota' "$FAKE_ONEDRIVE_LOG") == 1 ]]
 [[ $(grep -c -- '--display-sync-status' "$FAKE_ONEDRIVE_LOG") == 2 ]]
 [[ $(stat -c '%a' "$XDG_STATE_HOME/omarchy/io.github.salemsayed.omaonedrive") == 700 ]]
 [[ $(stat -c '%a' "$XDG_STATE_HOME/omarchy/io.github.salemsayed.omaonedrive/status-cache.json") == 600 ]]
 [[ $(stat -c '%a' "$XDG_STATE_HOME/omarchy/io.github.salemsayed.omaonedrive/status.lock") == 600 ]]
 
-FAKE_STATUS_FAILURE=1 python3 "$root/onedrive-status.py" --remote --limit 5 >"$test_root/remote-failure.json"
+FAKE_STATUS_FAILURE=1 python3 "$root/onedrive-status.py" --sync-status --limit 5 >"$test_root/remote-failure.json"
 jq -e '
   .remoteStatus == "Pending changes"
+  and .syncStatusError == "Cloud sync check failed"
+  and .quotaError == ""
   and .remoteError == "Cloud sync check failed"
   and .lastError == ""
   and .quotaKnown == true
@@ -175,16 +189,41 @@ jq -e '
 python3 "$root/onedrive-status.py" --limit 5 >"$test_root/cached-failure.json"
 jq -e '
   .remoteStatus == "Pending changes"
+  and .syncStatusError == "Cloud sync check failed"
+  and .quotaError == ""
   and .remoteError == "Cloud sync check failed"
   and .lastError == ""
 ' "$test_root/cached-failure.json" >/dev/null
 
-python3 "$root/onedrive-status.py" --remote --limit 5 >"$test_root/remote-recovered.json"
+python3 "$root/onedrive-status.py" --quota --limit 5 >"$test_root/quota-retry.json"
+jq -e '
+  .quotaError == ""
+  and .syncStatusError == "Cloud sync check failed"
+  and .remoteError == "Cloud sync check failed"
+' "$test_root/quota-retry.json" >/dev/null
+
+python3 "$root/onedrive-status.py" --sync-status --limit 5 >"$test_root/remote-recovered.json"
 jq -e '
   .remoteStatus == "Up to date"
+  and .quotaError == ""
+  and .syncStatusError == ""
   and .remoteError == ""
   and .lastError == ""
 ' "$test_root/remote-recovered.json" >/dev/null
+
+FAKE_QUOTA_FAILURE=1 python3 "$root/onedrive-status.py" --quota --limit 5 >"$test_root/quota-failure.json"
+jq -e '
+  .quotaKnown == true
+  and .usedBytes == 2000000000
+  and .quotaBytes == 10000000000
+  and .quotaError == "Cloud quota check failed"
+  and .syncStatusError == ""
+  and .lastError == ""
+' "$test_root/quota-failure.json" >/dev/null
+
+python3 "$root/onedrive-status.py" --quota --limit 5 >"$test_root/quota-recovered.json"
+jq -e '.quotaError == "" and .syncStatusError == "" and .remoteError == ""' \
+  "$test_root/quota-recovered.json" >/dev/null
 
 python3 - "$root/onedrive-status.py" <<'PY'
 import importlib.util
@@ -257,6 +296,8 @@ grep -Fq '["systemctl", "--user", "stop", "onedrive.service"]' "$root/Service.qm
 grep -Fq '["systemctl", "--user", "start", "onedrive.service"]' "$root/Service.qml"
 grep -Fq '["omarchy-launch-terminal", "onedrive"]' "$root/Service.qml"
 grep -Fq '["omarchy-launch-terminal", "onedrive", "--reauth"]' "$root/Service.qml"
+grep -Fq 'command.push("--quota")' "$root/Service.qml"
+grep -Fq 'command.push("--sync-status")' "$root/Service.qml"
 grep -Fq '"--unit=" + resumeUnit' "$root/Service.qml"
 grep -Fq '"--on-active=" + String(minutes) + "m"' "$root/Service.qml"
 grep -Fq '"/usr/bin/systemctl", "--user", "start", "onedrive.service"' "$root/Service.qml"

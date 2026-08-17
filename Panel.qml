@@ -46,9 +46,11 @@ Panel {
         if (row && row.visible && row.keyboardEnabled) items.push(row)
       }
     }
+    if (fullStatusAction.visible && fullStatusAction.keyboardEnabled) items.push(fullStatusAction)
     if (chipRow.visible && checkChip.keyboardEnabled) items.push(checkChip)
     if (chipRow.visible && folderChip.visible && folderChip.keyboardEnabled) items.push(folderChip)
     if (compactActions.visible && compactCheck.keyboardEnabled) items.push(compactCheck)
+    if (compactActions.visible && compactFullStatus.keyboardEnabled) items.push(compactFullStatus)
     if (compactActions.visible && compactFolder.keyboardEnabled) items.push(compactFolder)
     return items
   }
@@ -193,7 +195,8 @@ Panel {
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onActivateRequested: root.activateCursor()
       onTextKey: function(value) {
-        if (value === "r" || value === "R") oneDrive.refresh(true)
+        if (value === "r" || value === "R") oneDrive.checkQuota()
+        else if (value === "f" || value === "F") oneDrive.checkFullStatus()
         else if (value === "p" || value === "P") oneDrive.toggleRunning()
         else if (value === "o" || value === "O") oneDrive.openFolder()
         else if (value === "l" || value === "L") oneDrive.login()
@@ -379,7 +382,7 @@ Panel {
           CursorSurface {
             id: storageBlock
             readonly property bool keyboardEnabled: storageMouse.enabled
-            function keyboardActivate() { oneDrive.refresh(true) }
+            function keyboardActivate() { oneDrive.checkQuota() }
             visible: oneDrive.authenticated
             width: parent.width
             foreground: root.foreground
@@ -459,7 +462,7 @@ Panel {
 
                 Text {
                   id: storageChecked
-                  text: Model.checkedText(oneDrive.remoteCheckedTs)
+                  text: Model.checkedText(oneDrive.quotaCheckedTs)
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
@@ -470,23 +473,25 @@ Panel {
               }
 
               Text {
-                id: remoteWarning
-                visible: oneDrive.remoteError !== ""
+                id: quotaWarning
+                visible: oneDrive.quotaChecking || oneDrive.quotaError !== ""
                 width: parent.width
-                text: oneDrive.remoteError + " · Retry"
+                text: oneDrive.quotaChecking
+                  ? "Checking cloud storage… " + String(oneDrive.cloudSecondsRemaining) + "s"
+                  : oneDrive.quotaError + " · Retry"
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
-                font.underline: remoteWarningMouse.containsMouse
+                font.underline: quotaWarningMouse.containsMouse && !oneDrive.quotaChecking
                 wrapMode: Text.Wrap
 
                 MouseArea {
-                  id: remoteWarningMouse
+                  id: quotaWarningMouse
                   anchors.fill: parent
                   hoverEnabled: true
-                  enabled: !oneDrive.busy
+                  enabled: !oneDrive.busy && !oneDrive.quotaChecking
                   cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                  onClicked: oneDrive.refresh(true)
+                  onClicked: oneDrive.checkQuota()
                 }
               }
             }
@@ -498,7 +503,7 @@ Panel {
               enabled: !oneDrive.quotaKnown
               cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
               onEntered: root.setCursor(storageBlock)
-              onClicked: oneDrive.refresh(true)
+              onClicked: oneDrive.checkQuota()
             }
           }
 
@@ -563,6 +568,25 @@ Panel {
             }
           }
 
+          ActionRow {
+            id: fullStatusAction
+            visible: root.panelStyle === "full" && oneDrive.installed && oneDrive.authenticated
+            width: parent.width
+            title: oneDrive.fullStatusChecking ? "Checking full cloud status…" : "Full cloud status"
+            subtitle: oneDrive.fullStatusChecking
+              ? "Scanning your drive · " + String(oneDrive.cloudSecondsRemaining) + "s remaining"
+              : (oneDrive.syncStatusError !== ""
+                ? oneDrive.syncStatusError + " · Retry"
+                : (oneDrive.remoteStatus === "Not checked"
+                  ? "Optional · may take a while on large drives"
+                  : oneDrive.remoteStatus + " · optional; may be slow"))
+            icon: "󰑓"
+            actionIcon: oneDrive.fullStatusChecking ? "" : "󰑐"
+            spinning: oneDrive.fullStatusChecking
+            actionEnabled: !oneDrive.busy
+            onActivated: oneDrive.checkFullStatus()
+          }
+
           Row {
             id: chipRow
             visible: root.panelStyle === "full" && oneDrive.installed && oneDrive.authenticated
@@ -572,10 +596,12 @@ Panel {
             ActionChip {
               id: checkChip
               width: folderChip.visible ? (chipRow.width - chipRow.spacing) / 2 : chipRow.width
-              text: "Check cloud"
+              text: oneDrive.quotaChecking
+                ? "Checking " + String(oneDrive.cloudSecondsRemaining) + "s" : "Check storage"
               icon: "󰑓"
+              spinning: oneDrive.quotaChecking
               enabled: !oneDrive.busy
-              onActivated: oneDrive.refresh(true)
+              onActivated: oneDrive.checkQuota()
             }
 
             ActionChip {
@@ -597,12 +623,26 @@ Panel {
             CompactActionRow {
               id: compactCheck
               width: parent.width
-              title: "Check cloud"
+              title: oneDrive.quotaChecking ? "Checking cloud storage…" : "Check cloud storage"
               icon: "󰑓"
-              meta: Model.relativeTime(oneDrive.remoteCheckedTs)
+              meta: oneDrive.quotaChecking ? String(oneDrive.cloudSecondsRemaining) + "s"
+                : Model.relativeTime(oneDrive.quotaCheckedTs)
+              spinning: oneDrive.quotaChecking
               selected: true
               actionEnabled: !oneDrive.busy
-              onActivated: oneDrive.refresh(true)
+              onActivated: oneDrive.checkQuota()
+            }
+
+            CompactActionRow {
+              id: compactFullStatus
+              width: parent.width
+              title: oneDrive.fullStatusChecking ? "Checking full cloud status…" : "Full status (optional)"
+              icon: "󰑓"
+              meta: oneDrive.fullStatusChecking ? String(oneDrive.cloudSecondsRemaining) + "s"
+                : (oneDrive.syncStatusError !== "" ? "retry" : "may be slow")
+              spinning: oneDrive.fullStatusChecking
+              actionEnabled: !oneDrive.busy
+              onActivated: oneDrive.checkFullStatus()
             }
 
             CompactActionRow {
@@ -627,9 +667,11 @@ Panel {
     property string icon: ""
     property string actionIcon: "󰐕"
     property bool actionEnabled: true
+    property bool spinning: false
     readonly property bool keyboardEnabled: actionEnabled
     signal activated()
     function keyboardActivate() { if (actionEnabled) activated() }
+    onSpinningChanged: { if (!spinning) actionRowGlyph.rotation = 0 }
 
     foreground: root.foreground
     hasCursor: (actionMouse.containsMouse || root.cursorItem === actionRow) && actionEnabled
@@ -656,11 +698,20 @@ Panel {
       spacing: Style.space(9)
 
       Text {
+        id: actionRowGlyph
         text: actionRow.icon
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.icon
         Layout.alignment: Qt.AlignVCenter
+
+        RotationAnimation on rotation {
+          running: actionRow.spinning
+          from: 0
+          to: 360
+          duration: 900
+          loops: Animation.Infinite
+        }
       }
 
       ColumnLayout {
@@ -800,9 +851,11 @@ Panel {
     id: actionChip
     property string text: ""
     property string icon: ""
+    property bool spinning: false
     readonly property bool keyboardEnabled: enabled
     signal activated()
     function keyboardActivate() { if (enabled) activated() }
+    onSpinningChanged: { if (!spinning) actionChipGlyph.rotation = 0 }
 
     foreground: root.foreground
     bordered: true
@@ -811,12 +864,32 @@ Panel {
     height: implicitHeight
     opacity: enabled ? 1.0 : 0.5
 
-    Text {
+    Row {
       anchors.centerIn: parent
-      text: actionChip.icon + "  " + actionChip.text
-      color: root.foreground
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.bodySmall
+      spacing: Style.space(6)
+
+      Text {
+        id: actionChipGlyph
+        text: actionChip.icon
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+
+        RotationAnimation on rotation {
+          running: actionChip.spinning
+          from: 0
+          to: 360
+          duration: 900
+          loops: Animation.Infinite
+        }
+      }
+
+      Text {
+        text: actionChip.text
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+      }
     }
 
     MouseArea {
@@ -837,9 +910,11 @@ Panel {
     property string meta: ""
     property bool selected: false
     property bool actionEnabled: true
+    property bool spinning: false
     readonly property bool keyboardEnabled: actionEnabled
     signal activated()
     function keyboardActivate() { if (actionEnabled) activated() }
+    onSpinningChanged: { if (!spinning) compactActionGlyph.rotation = 0 }
 
     foreground: root.foreground
     current: selected
@@ -858,11 +933,20 @@ Panel {
       spacing: Style.space(8)
 
       Text {
+        id: compactActionGlyph
         text: compactRow.icon
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
         Layout.alignment: Qt.AlignVCenter
+
+        RotationAnimation on rotation {
+          running: compactRow.spinning
+          from: 0
+          to: 360
+          duration: 900
+          loops: Animation.Infinite
+        }
       }
 
       Text {

@@ -28,15 +28,17 @@ leave sync paused unexpectedly.
 - recent regular files below the configured sync directory, without following
   symlinks.
 
-Routine status calls do not contact Microsoft. `--remote` additionally invokes
-the CLI's `--display-quota` and `--display-sync-status` display modes with
-independent bounded timeouts, concurrently so one slow request does not delay
-the other. Successful results and recent-file rows are atomically cached under
+Routine status calls do not contact Microsoft. `--quota` invokes the CLI's
+fast `--display-quota` mode, while `--sync-status` invokes the potentially slow
+full-drive `--display-sync-status` mode. The legacy `--remote` helper option
+runs both with independent bounded timeouts. Quota and sync-status timestamps,
+errors, and successful results remain independent. Presentation data and
+recent-file rows are atomically cached under
 `$XDG_STATE_HOME/omarchy/io.github.salemsayed.omaonedrive`, or the standard
 `~/.local/state` fallback. The directory is mode `0700`; the cache and lock are
-mode `0600`. Failed or timed-out cloud queries retain the last successful
-result and are reported separately from local service failures. A file lock
-serializes multiple monitor/widget instances.
+mode `0600`. Failed or timed-out cloud queries retain the last successful result
+and are reported separately from each other and from local service failures. A
+file lock serializes multiple monitor/widget instances.
 
 No refresh-token content, Microsoft response URL, access token, browser state,
 or file content crosses the helper boundary.

@@ -31,7 +31,11 @@ Item {
   property double usedBytes: 0
   property double quotaBytes: 0
   property bool quotaKnown: false
+  property double quotaCheckedTs: 0
+  property string quotaError: ""
   property string remoteStatus: "Not checked"
+  property double syncStatusCheckedTs: 0
+  property string syncStatusError: ""
   property double remoteCheckedTs: 0
   property string remoteError: ""
   property var files: []
@@ -45,8 +49,13 @@ Item {
   readonly property bool busy: statusProcess.running || controlProcess.running
     || cancelTimerProcess.running || scheduleTimerProcess.running
   readonly property string resumeUnit: "omaonedrive-resume"
+  readonly property bool cloudChecking: _activeCloudMode !== "" && statusProcess.running
+  readonly property bool quotaChecking: _activeCloudMode === "quota" && statusProcess.running
+  readonly property bool fullStatusChecking: _activeCloudMode === "sync-status" && statusProcess.running
 
-  property bool _remoteRequested: false
+  property string _cloudRequested: ""
+  property string _activeCloudMode: ""
+  property int cloudSecondsRemaining: 0
   property string _statusOutput: ""
   property string _statusError: ""
   property string _controlOutput: ""
@@ -70,16 +79,52 @@ Item {
   }
 
   function refresh(remote) {
-    if (remote === true) _remoteRequested = true
+    if (remote === true) {
+      checkQuota()
+      return
+    }
     if (statusProcess.running || helperPath === "") return
-    var useRemote = _remoteRequested
-    _remoteRequested = false
+    startStatusProcess("")
+  }
+
+  function checkQuota() {
+    requestCloudCheck("quota")
+  }
+
+  function checkFullStatus() {
+    requestCloudCheck("sync-status")
+  }
+
+  function requestCloudCheck(mode) {
+    if (helperPath === "") return
+    if (statusProcess.running) {
+      _cloudRequested = mode
+      return
+    }
+    startStatusProcess(mode)
+  }
+
+  function updateCloudProgress() {
+    if (_activeCloudMode === "quota")
+      actionStatus = "Checking cloud storage… " + String(cloudSecondsRemaining) + "s"
+    else if (_activeCloudMode === "sync-status")
+      actionStatus = "Checking full cloud status… " + String(cloudSecondsRemaining) + "s"
+  }
+
+  function startStatusProcess(cloudMode) {
+    _activeCloudMode = cloudMode
     _statusOutput = ""
     _statusError = ""
     refreshing = true
-    if (useRemote) actionStatus = "Checking OneDrive cloud…"
     var command = ["python3", helperPath, "--limit", String(recentFileLimit)]
-    if (useRemote) command.push("--remote")
+    if (cloudMode === "quota") command.push("--quota")
+    else if (cloudMode === "sync-status") command.push("--sync-status")
+    if (cloudMode !== "") {
+      actionStatusTimer.stop()
+      cloudSecondsRemaining = 30
+      updateCloudProgress()
+      cloudCountdown.start()
+    }
     statusProcess.command = command
     statusProcess.running = true
   }
@@ -110,7 +155,11 @@ Item {
     usedBytes = Number(parsed.usedBytes || 0)
     quotaBytes = Number(parsed.quotaBytes || 0)
     quotaKnown = parsed.quotaKnown === true
+    quotaCheckedTs = Number(parsed.quotaCheckedTs || 0)
+    quotaError = String(parsed.quotaError || "")
     remoteStatus = String(parsed.remoteStatus || "Not checked")
+    syncStatusCheckedTs = Number(parsed.syncStatusCheckedTs || 0)
+    syncStatusError = String(parsed.syncStatusError || "")
     remoteCheckedTs = Number(parsed.remoteCheckedTs || 0)
     remoteError = String(parsed.remoteError || "")
     files = parsed.files || []
@@ -270,6 +319,17 @@ Item {
     onTriggered: root.actionStatus = ""
   }
 
+  Timer {
+    id: cloudCountdown
+    interval: 1000
+    repeat: true
+    onTriggered: {
+      root.cloudSecondsRemaining = Math.max(0, root.cloudSecondsRemaining - 1)
+      root.updateCloudProgress()
+      if (root.cloudSecondsRemaining === 0) stop()
+    }
+  }
+
   Process {
     id: statusProcess
     running: false
@@ -285,18 +345,28 @@ Item {
       onStreamFinished: root._statusError = text
     }
     onExited: function(exitCode) {
+      var cloudMode = root._activeCloudMode
       root.refreshing = false
+      cloudCountdown.stop()
+      root.cloudSecondsRemaining = 0
       var stdout = String(statusStdout.text || root._statusOutput || "")
       var stderr = String(statusStderr.text || root._statusError || "")
       if (exitCode === 0) root.applyStatus(stdout)
       else root.lastError = root.elideStatus(stderr || stdout || "Could not read OneDrive status")
-      if (root.actionStatus === "Checking OneDrive cloud…") {
-        root.actionStatus = exitCode === 0
-          ? (root.remoteError === "" ? "Cloud status updated" : root.remoteError)
-          : root.lastError
+      if (cloudMode !== "") {
+        if (exitCode !== 0) root.actionStatus = root.lastError
+        else if (cloudMode === "quota")
+          root.actionStatus = root.quotaError === "" ? "Cloud storage updated" : root.quotaError
+        else root.actionStatus = root.syncStatusError === ""
+          ? "Full cloud status updated" : root.syncStatusError
         actionStatusTimer.restart()
       }
-      if (root._remoteRequested) Qt.callLater(function() { root.refresh(true) })
+      root._activeCloudMode = ""
+      if (root._cloudRequested !== "") {
+        var requested = root._cloudRequested
+        root._cloudRequested = ""
+        Qt.callLater(function() { root.requestCloudCheck(requested) })
+      }
     }
   }
 

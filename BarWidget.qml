@@ -88,7 +88,11 @@ BarWidget {
       return "ok"
     }
     function check(): string {
-      if (root.service) root.service.refresh(true)
+      if (root.service) root.service.checkQuota()
+      return "ok"
+    }
+    function fullStatus(): string {
+      if (root.service) root.service.checkFullStatus()
       return "ok"
     }
     function pause(): string {
@@ -160,7 +164,7 @@ BarWidget {
       }
     }
     onPressed: function(buttonCode) {
-      if (buttonCode === Qt.RightButton && root.service) root.service.refresh(true)
+      if (buttonCode === Qt.RightButton && root.service) root.service.checkQuota()
       else if (buttonCode === Qt.MiddleButton && root.service) root.service.openFolder()
       else root.togglePanel()
     }

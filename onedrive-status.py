@@ -21,6 +21,8 @@ SCAN_CACHE_SECONDS = 120
 MAX_SERVICE_EVENTS = 2
 MAX_FILE_EVENTS = 5
 ACTIVITY_LIMIT = 5
+QUOTA_TIMEOUT_SECONDS = 30
+SYNC_STATUS_TIMEOUT_SECONDS = 30
 
 
 def command_output(command, timeout=4):
@@ -316,30 +318,82 @@ def parse_remote_status(output):
   return lines[-1][:120] if lines else "Could not determine"
 
 
-def remote_check(onedrive_path, confdir, cache):
-  errors = []
-  quota_command = [onedrive_path, "--confdir", str(confdir), "--display-quota"]
-  status_command = [onedrive_path, "--confdir", str(confdir), "--display-sync-status"]
-  with ThreadPoolExecutor(max_workers=2) as executor:
-    quota_future = executor.submit(command_output, quota_command, 20)
-    status_future = executor.submit(command_output, status_command, 30)
-    quota_exit, quota_output = quota_future.result()
-    status_exit, status_output = status_future.result()
+def migrate_cloud_cache(cache):
+  legacy_error = str(cache.get("remoteError", ""))
+  if "quotaError" not in cache:
+    cache["quotaError"] = "; ".join(
+      part.strip() for part in legacy_error.split(";") if "quota" in part.lower()
+    )
+  if "syncStatusError" not in cache:
+    cache["syncStatusError"] = "; ".join(
+      part.strip() for part in legacy_error.split(";") if "quota" not in part.lower()
+    )
 
-  quota = parse_quota(quota_output) if quota_exit == 0 else None
+  checked_at = int(cache.get("remoteCheckedTs", 0) or 0)
+  if "quotaCheckedTs" not in cache and cache.get("quotaKnown") is True:
+    cache["quotaCheckedTs"] = checked_at
+  if "syncStatusCheckedTs" not in cache and (
+    cache.get("remoteStatus", "Not checked") != "Not checked" or cache.get("syncStatusError")
+  ):
+    cache["syncStatusCheckedTs"] = checked_at
+
+
+def update_cloud_compatibility(cache):
+  cache["remoteCheckedTs"] = max(
+    int(cache.get("quotaCheckedTs", 0) or 0),
+    int(cache.get("syncStatusCheckedTs", 0) or 0),
+  )
+  cache["remoteError"] = "; ".join(
+    error for error in (
+      str(cache.get("quotaError", "")),
+      str(cache.get("syncStatusError", "")),
+    ) if error
+  )
+
+
+def apply_quota_result(cache, exit_code, output, checked_at):
+  quota = parse_quota(output) if exit_code == 0 else None
   if quota:
     cache["usedBytes"], cache["quotaBytes"] = quota
     cache["quotaKnown"] = True
+    cache["quotaError"] = ""
   else:
-    errors.append("Cloud quota check timed out" if quota_exit == 124 else "Cloud quota check failed")
+    cache["quotaError"] = "Cloud quota check timed out" \
+      if exit_code == 124 else "Cloud quota check failed"
+  cache["quotaCheckedTs"] = checked_at
 
-  if status_exit == 0:
-    cache["remoteStatus"] = parse_remote_status(status_output)
+
+def apply_sync_status_result(cache, exit_code, output, checked_at):
+  if exit_code == 0:
+    cache["remoteStatus"] = parse_remote_status(output)
+    cache["syncStatusError"] = ""
   else:
-    errors.append("Microsoft Graph check timed out" if status_exit == 124 else "Cloud sync check failed")
+    cache["syncStatusError"] = "Microsoft Graph check timed out" \
+      if exit_code == 124 else "Cloud sync check failed"
+  cache["syncStatusCheckedTs"] = checked_at
 
-  cache["remoteCheckedTs"] = int(time.time())
-  cache["remoteError"] = "; ".join(errors)
+
+def cloud_check(onedrive_path, confdir, cache, check_quota, check_sync_status):
+  quota_command = [onedrive_path, "--confdir", str(confdir), "--display-quota"]
+  status_command = [onedrive_path, "--confdir", str(confdir), "--display-sync-status"]
+  checked_at = int(time.time())
+  if check_quota and check_sync_status:
+    with ThreadPoolExecutor(max_workers=2) as executor:
+      quota_future = executor.submit(command_output, quota_command, QUOTA_TIMEOUT_SECONDS)
+      status_future = executor.submit(command_output, status_command, SYNC_STATUS_TIMEOUT_SECONDS)
+      quota_result = quota_future.result()
+      status_result = status_future.result()
+    apply_quota_result(cache, *quota_result, checked_at)
+    apply_sync_status_result(cache, *status_result, checked_at)
+  elif check_quota:
+    apply_quota_result(cache, *command_output(quota_command, timeout=QUOTA_TIMEOUT_SECONDS), checked_at)
+  elif check_sync_status:
+    apply_sync_status_result(
+      cache,
+      *command_output(status_command, timeout=SYNC_STATUS_TIMEOUT_SECONDS),
+      checked_at,
+    )
+  update_cloud_compatibility(cache)
 
 
 def resume_time_text(resume_at, now=None):
@@ -407,6 +461,7 @@ def build_status(args):
     cache = load_cache(cache_path)
     if cache.get("remoteStatus") == "Check failed":
       cache["remoteStatus"] = "Not checked"
+    migrate_cloud_cache(cache)
     now = int(time.time())
     cached_sync_dir = str(cache.get("scanSyncDir", ""))
     cached_limit = int(cache.get("scanLimit", 0) or 0)
@@ -417,8 +472,10 @@ def build_status(args):
       cache["scanSyncDir"] = str(sync_dir)
       cache["scanLimit"] = args.limit
 
-    if args.remote and onedrive_path and authenticated:
-      remote_check(onedrive_path, confdir, cache)
+    check_quota = args.remote or args.quota
+    check_sync_status = args.remote or args.sync_status
+    if (check_quota or check_sync_status) and onedrive_path and authenticated:
+      cloud_check(onedrive_path, confdir, cache, check_quota, check_sync_status)
 
     save_cache(cache_path, cache)
 
@@ -472,7 +529,11 @@ def build_status(args):
     "usedBytes": int(cache.get("usedBytes", 0) or 0),
     "quotaBytes": int(cache.get("quotaBytes", 0) or 0),
     "quotaKnown": cache.get("quotaKnown") is True,
+    "quotaCheckedTs": int(cache.get("quotaCheckedTs", 0) or 0),
+    "quotaError": str(cache.get("quotaError", "")),
     "remoteStatus": str(cache.get("remoteStatus", "Not checked")),
+    "syncStatusCheckedTs": int(cache.get("syncStatusCheckedTs", 0) or 0),
+    "syncStatusError": str(cache.get("syncStatusError", "")),
     "remoteCheckedTs": int(cache.get("remoteCheckedTs", 0) or 0),
     "remoteError": str(cache.get("remoteError", "")),
     "files": files,
@@ -484,7 +545,9 @@ def build_status(args):
 
 def main():
   parser = argparse.ArgumentParser(description="Read OneDrive CLI state for OmaOneDrive")
-  parser.add_argument("--remote", action="store_true", help="also query Microsoft for quota and pending changes")
+  parser.add_argument("--quota", action="store_true", help="query Microsoft for cloud quota only")
+  parser.add_argument("--sync-status", action="store_true", help="query Microsoft for full-drive sync status only")
+  parser.add_argument("--remote", action="store_true", help="query both quota and full-drive sync status")
   parser.add_argument("--limit", type=int, default=20, help="number of recent local files")
   parser.add_argument("--service", default=DEFAULT_SERVICE, help="systemd user service name")
   args = parser.parse_args()
