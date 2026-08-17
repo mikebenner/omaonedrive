@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.salemsayed.omaonedrive",
   "name": "OmaOneDrive",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "Salem Sayed",
   "license": "MIT",
-  "description": "OneDrive service status, cloud storage, and recent sync activity in the Omarchy bar.",
+  "description": "OneDrive status, timed pause controls, cloud storage, and recent sync activity in the Omarchy bar.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,8 +14,8 @@
   },
   "barWidget": {
     "displayName": "OmaOneDrive",
-    "description": "Control the installed OneDrive CLI, check cloud sync status, and open recent local files.",
-    "category": "System",
+    "description": "Control and temporarily pause the OneDrive CLI, check cloud status, and open recent local files.",
+    "category": "Files",
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {

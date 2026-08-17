@@ -80,8 +80,23 @@ test("folder, tooltip, and plugin paths handle spaces", () => {
   assert.equal(Model.folderName(""), "Not configured")
   assert.equal(Model.tooltip({ installed: false }), "OneDrive CLI is not installed")
   assert.equal(
-    Model.tooltip({ installed: true, statusText: "Monitoring", lastSyncTs: 1000 }, 1000 * 1000 + 60 * 1000),
+    Model.tooltip({ installed: true, statusText: "Monitoring", syncMode: "", lastSyncTs: 1000 }, 1000 * 1000 + 60 * 1000),
     "Monitoring · last sync 1m ago"
   )
+  assert.equal(
+    Model.tooltip({
+      installed: true,
+      authenticated: true,
+      statusText: "Monitoring",
+      syncMode: "Download only",
+      lastSyncTs: 0
+    }),
+    "Monitoring · Download only"
+  )
+  assert.equal(Model.heroMeta({
+    authenticated: true,
+    statusText: "Monitoring",
+    syncMode: "Upload only"
+  }), "Monitoring · Upload only")
   assert.equal(Model.filePath("file:///tmp/Oma%20OneDrive/status.py"), "/tmp/Oma OneDrive/status.py")
 })

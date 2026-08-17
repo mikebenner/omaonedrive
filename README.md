@@ -18,16 +18,23 @@ Captured against a real OneDrive account in a disposable Omarchy VM.
 ## What it does
 
 - Shows whether OneDrive is monitoring, syncing, paused, or needs attention.
+- Distinguishes two-way, download-only, and upload-only configurations, and
+  reports disabled, starting, failed, reauthentication, and resync-required
+  service states instead of treating all stopped clients as paused.
 - Adds distinct missing-client, login, paused, and syncing badges to the bar
   icon, with a plain dot for the healthy monitoring state.
-- Pauses and resumes `onedrive.service` from a native Omarchy toggle.
+- Pauses and resumes `onedrive.service` from a native Omarchy toggle, with
+  suggested 15-minute, 1-hour, and 4-hour timed pauses.
 - Opens the CLI's browser-based login flow in a terminal when authentication is
-  missing.
+  missing, and offers the CLI's explicit reauthentication flow when an existing
+  authorization has expired.
 - Shows used and free cloud storage in a compact usage meter.
 - Merges successful syncs, service errors, and recent local changes into an
   honest activity timeline.
 - Offers a Full layout with storage and recent activity, and a shorter Compact
   layout with storage and primary actions.
+- Supports arrow-key navigation and Enter activation across panel actions and
+  recent files, with the selected row kept in view.
 - Opens the configured sync directory and local files from activity rows.
 - Checks Microsoft on demand for exact cloud quota and pending changes.
 - Caches only presentation data. It never reads, copies, prints, or stores the
@@ -38,9 +45,10 @@ Controls:
 - Left-click toggles the panel.
 - Middle-click opens the configured OneDrive folder.
 - Right-click checks cloud quota and pending changes.
-- The panel does not print a permanent key legend, but `R` checks the cloud,
-  `P` pauses/resumes sync, `O` opens the folder, `L` opens login, and `Esc`
-  closes the panel.
+- Arrow keys move between available actions and recent files, and `Enter`
+  activates the selection. The panel does not print a permanent key legend,
+  but `R` checks the cloud, `P` pauses/resumes sync, `O` opens the folder, `L`
+  opens login, and `Esc` closes the panel.
 
 Routine 30-second refreshes are local: they inspect the user service, its
 journal, the configured sync path, and cached presentation data. Only the
@@ -52,6 +60,7 @@ explicit **Check OneDrive cloud** action runs `onedrive --display-quota` and
 - Omarchy Quattro with the Quickshell plugin system.
 - Python 3.
 - The abraunegg `onedrive` CLI and its `onedrive.service` systemd user unit.
+- The current implementation is tested against `onedrive` 2.5.11.
 - Nautilus for selecting a recent file; opening the sync folder uses the system
   default file manager.
 
@@ -106,6 +115,7 @@ omarchy-shell io.github.salemsayed.omaonedrive status
 omarchy-shell io.github.salemsayed.omaonedrive refresh
 omarchy-shell io.github.salemsayed.omaonedrive check
 omarchy-shell io.github.salemsayed.omaonedrive pause
+omarchy-shell io.github.salemsayed.omaonedrive pauseFor 60
 omarchy-shell io.github.salemsayed.omaonedrive resume
 omarchy-shell io.github.salemsayed.omaonedrive folder
 omarchy-shell io.github.salemsayed.omaonedrive open
@@ -133,7 +143,11 @@ If `XDG_STATE_HOME` is set, use that location instead of
 
 OmaOneDrive performs no file upload, download, deletion, resync, logout, or
 configuration edit. Pause/resume is limited to `systemctl --user stop/start
-onedrive.service`. The cloud check uses the client's read-only display modes.
+onedrive.service`. A timed pause creates a transient user-systemd timer whose
+only command is to start that same service; it survives a bar or shell reload,
+but is not promised across reboot. Login and reauthentication open the client
+in a terminal so the user remains in control of the Microsoft authorization
+flow. The cloud check uses the client's read-only display modes.
 Activity file rows are accurately labeled **changed in** their local folder; a
 recent local timestamp alone is not proof that Microsoft has accepted that
 individual file.

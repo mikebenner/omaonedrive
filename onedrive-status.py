@@ -15,6 +15,7 @@ from pathlib import Path
 
 PLUGIN_ID = "io.github.salemsayed.omaonedrive"
 DEFAULT_SERVICE = "onedrive.service"
+RESUME_TIMER = "omaonedrive-resume.timer"
 SCAN_CACHE_SECONDS = 120
 MAX_SERVICE_EVENTS = 2
 MAX_FILE_EVENTS = 5
@@ -76,29 +77,63 @@ def save_cache(path, value):
       pass
 
 
-def config_sync_dir(confdir, onedrive_path):
+def parse_bool(value):
+  return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def config_option(output, name):
+  match = re.search(rf"^Config option '{re.escape(name)}'\s*=\s*(.*)$", output, re.MULTILINE)
+  return match.group(1).strip().strip('"') if match else ""
+
+
+def read_config_values(confdir):
+  values = {}
+  try:
+    for line in (confdir / "config").read_text(encoding="utf-8").splitlines():
+      match = re.match(r"\s*([A-Za-z0-9_]+)\s*=\s*(.+?)\s*$", line)
+      if not match:
+        continue
+      values[match.group(1)] = match.group(2).split("#", 1)[0].strip().strip('"')
+  except OSError:
+    pass
+  return values
+
+
+def client_config(confdir, onedrive_path):
+  values = read_config_values(confdir)
+  client_version = ""
   if onedrive_path:
     exit_code, output = command_output(
       [onedrive_path, "--confdir", str(confdir), "--display-config"],
       timeout=6,
     )
     if exit_code == 0:
-      match = re.search(r"Config option 'sync_dir'\s*=\s*(.+)$", output, re.MULTILINE)
-      if match:
-        return Path(os.path.expandvars(os.path.expanduser(match.group(1).strip().strip('"'))))
+      for name in ("sync_dir", "download_only", "upload_only"):
+        value = config_option(output, name)
+        if value != "":
+          values[name] = value
+      version_match = re.search(r"^Application version\s*=\s*(.+)$", output, re.MULTILINE)
+      if version_match:
+        client_version = version_match.group(1).strip()
 
-  config_path = confdir / "config"
-  try:
-    for line in config_path.read_text(encoding="utf-8").splitlines():
-      match = re.match(r"\s*sync_dir\s*=\s*(.+?)\s*$", line)
-      if not match:
-        continue
-      value = match.group(1).split("#", 1)[0].strip().strip('"')
-      if value:
-        return Path(os.path.expandvars(os.path.expanduser(value)))
-  except OSError:
-    pass
-  return Path.home() / "OneDrive"
+  sync_dir_value = values.get("sync_dir", "")
+  sync_dir = Path(os.path.expandvars(os.path.expanduser(sync_dir_value))) \
+    if sync_dir_value else Path.home() / "OneDrive"
+  download_only = parse_bool(values.get("download_only"))
+  upload_only = parse_bool(values.get("upload_only"))
+  if download_only and upload_only:
+    sync_mode = "Invalid sync mode"
+  elif download_only:
+    sync_mode = "Download only"
+  elif upload_only:
+    sync_mode = "Upload only"
+  else:
+    sync_mode = "Two-way"
+  return {
+    "syncDir": sync_dir,
+    "syncMode": sync_mode,
+    "clientVersion": client_version,
+  }
 
 
 def systemctl_value(arguments):
@@ -106,14 +141,61 @@ def systemctl_value(arguments):
 
 
 def service_state(service):
-  _, load_state = systemctl_value(["show", service, "--property=LoadState", "--value"])
-  _, active_state = systemctl_value(["is-active", service])
-  _, enabled_state = systemctl_value(["is-enabled", service])
+  exit_code, output = systemctl_value([
+    "show",
+    service,
+    "--property=LoadState,ActiveState,SubState,UnitFileState,Result,ExecMainCode,ExecMainStatus",
+    "--no-pager",
+  ])
+  properties = {}
+  if exit_code == 0:
+    for line in output.splitlines():
+      key, separator, value = line.partition("=")
+      if separator:
+        properties[key] = value.strip()
+  load_state = properties.get("LoadState", "")
+  active_state = properties.get("ActiveState", "")
+  unit_file_state = properties.get("UnitFileState", "")
+  result = properties.get("Result", "")
+  try:
+    exit_status = int(properties.get("ExecMainStatus", "0") or 0)
+  except ValueError:
+    exit_status = 0
+  failed = active_state == "failed"
   return {
-    "serviceAvailable": load_state.strip() == "loaded",
-    "running": active_state.strip() == "active",
-    "enabled": enabled_state.strip() == "enabled",
+    "serviceAvailable": load_state == "loaded",
+    "running": active_state == "active",
+    "enabled": unit_file_state in ("enabled", "enabled-runtime"),
+    "activeState": active_state,
+    "subState": properties.get("SubState", ""),
+    "serviceResult": result,
+    "serviceExitStatus": exit_status,
+    "serviceFailed": failed,
+    "resyncRequired": failed and exit_status == 126,
   }
+
+
+def resume_timer_state():
+  exit_code, output = systemctl_value([
+    "list-timers",
+    RESUME_TIMER,
+    "--all",
+    "--output=json",
+    "--no-pager",
+  ])
+  if exit_code != 0:
+    return 0
+  try:
+    rows = json.loads(output)
+  except json.JSONDecodeError:
+    return 0
+  if not isinstance(rows, list) or not rows:
+    return 0
+  try:
+    next_usec = int(rows[0].get("next", 0) or 0)
+  except (AttributeError, TypeError, ValueError):
+    return 0
+  return next_usec // 1_000_000 if next_usec > 0 else 0
 
 
 def journal_state(service):
@@ -121,13 +203,20 @@ def journal_state(service):
     ["journalctl", "--user", "--unit", service, "--lines", "120", "--no-pager", "--output", "json"],
     timeout=5,
   )
-  result = {"syncing": False, "lastSyncTs": 0, "lastError": "", "events": []}
+  result = {
+    "syncing": False,
+    "lastSyncTs": 0,
+    "lastError": "",
+    "reauthRequired": False,
+    "events": [],
+  }
   if exit_code != 0:
     return result
 
   last_start = 0
   last_complete = 0
   last_error = 0
+  last_reauth = 0
   for line in output.splitlines():
     try:
       row = json.loads(line)
@@ -152,10 +241,17 @@ def journal_state(service):
       if timestamp >= last_error:
         last_error = timestamp
         result["lastError"] = cleaned_message
+    if any(marker in lowered for marker in (
+      "issue a --reauth",
+      "fresh auth token is needed",
+      "reauthenticate this client",
+    )):
+      last_reauth = max(last_reauth, timestamp)
 
   result["events"] = sorted(result["events"], key=lambda event: event["ts"], reverse=True)[:MAX_SERVICE_EVENTS]
   result["lastSyncTs"] = last_complete
   result["syncing"] = last_start > last_complete
+  result["reauthRequired"] = last_reauth > last_complete
   if last_complete >= last_error:
     result["lastError"] = ""
   return result
@@ -242,15 +338,39 @@ def remote_check(onedrive_path, confdir, cache):
   cache["remoteError"] = "; ".join(errors)
 
 
-def status_text(installed, authenticated, running, journal):
+def resume_time_text(resume_at, now=None):
+  current = int(time.time()) if now is None else int(now)
+  seconds = max(0, int(resume_at or 0) - current)
+  if seconds < 60:
+    return "<1m"
+  minutes = (seconds + 59) // 60
+  if minutes < 60:
+    return f"{minutes}m"
+  hours, remaining = divmod(minutes, 60)
+  return f"{hours}h" if remaining == 0 else f"{hours}h {remaining}m"
+
+
+def status_text(installed, authenticated, service, journal, resume_at=0):
   if not installed:
     return "Not installed"
   if not authenticated:
     return "Login required"
-  if not running:
-    return "Sync paused"
-  if journal["lastError"]:
+  if journal["reauthRequired"]:
+    return "Reauthentication required"
+  if not service["serviceAvailable"]:
+    return "Service unavailable"
+  if service["resyncRequired"]:
+    return "Resync required"
+  if service["serviceFailed"] or journal["lastError"]:
     return "Attention needed"
+  if service["activeState"] == "activating":
+    return "Starting…"
+  if not service["running"] and resume_at > int(time.time()):
+    return "Paused · resumes in " + resume_time_text(resume_at)
+  if not service["running"] and not service["enabled"]:
+    return "Auto-start disabled"
+  if not service["running"]:
+    return "Sync paused"
   if journal["syncing"]:
     return "Syncing…"
   return "Monitoring"
@@ -259,13 +379,16 @@ def status_text(installed, authenticated, running, journal):
 def build_status(args):
   onedrive_path = shutil.which("onedrive")
   confdir = default_confdir()
-  sync_dir = config_sync_dir(confdir, onedrive_path)
+  config = client_config(confdir, onedrive_path)
+  sync_dir = config["syncDir"]
   authenticated = (confdir / "refresh_token").is_file()
   service = service_state(args.service)
+  resume_at = resume_timer_state()
   journal = journal_state(args.service) if service["serviceAvailable"] else {
     "syncing": False,
     "lastSyncTs": 0,
     "lastError": "",
+    "reauthRequired": False,
     "events": [],
   }
 
@@ -295,6 +418,10 @@ def build_status(args):
 
   remote_error = str(cache.get("remoteError", ""))
   local_error = journal["lastError"]
+  if service["resyncRequired"] and not local_error:
+    local_error = "OneDrive stopped because a manual --resync is required"
+  elif service["serviceFailed"] and not local_error:
+    local_error = "OneDrive service failed"
   files = cache.get("files", [])
   activity = [
     {
@@ -329,9 +456,13 @@ def build_status(args):
     "installed": onedrive_path is not None,
     **service,
     "authenticated": authenticated,
+    "reauthRequired": journal["reauthRequired"],
     "syncing": service["running"] and journal["syncing"],
-    "statusText": status_text(onedrive_path is not None, authenticated, service["running"], journal),
+    "statusText": status_text(onedrive_path is not None, authenticated, service, journal, resume_at),
+    "resumeAt": resume_at,
     "syncDir": str(sync_dir),
+    "syncMode": config["syncMode"],
+    "clientVersion": config["clientVersion"],
     "lastSyncTs": journal["lastSyncTs"],
     "usedBytes": int(cache.get("usedBytes", 0) or 0),
     "quotaBytes": int(cache.get("quotaBytes", 0) or 0),

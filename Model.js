@@ -21,10 +21,17 @@ function defaultStatus() {
     serviceAvailable: false,
     running: false,
     enabled: false,
+    activeState: "",
+    serviceFailed: false,
+    resyncRequired: false,
     authenticated: false,
+    reauthRequired: false,
     syncing: false,
     statusText: "Unavailable",
     syncDir: "",
+    syncMode: "Two-way",
+    clientVersion: "",
+    resumeAt: 0,
     lastSyncTs: 0,
     usedBytes: 0,
     quotaBytes: 0,
@@ -201,8 +208,18 @@ function folderName(path) {
 function tooltip(status, nowMs) {
   if (!status || status.installed !== true) return "OneDrive CLI is not installed"
   var parts = [String(status.statusText || "OneDrive")]
+  if (status.authenticated === true && String(status.syncMode || "") !== "")
+    parts.push(String(status.syncMode))
   if (Number(status.lastSyncTs || 0) > 0)
     parts.push("last sync " + relativeTime(status.lastSyncTs, nowMs))
+  return parts.join(" · ")
+}
+
+function heroMeta(status) {
+  if (!status || typeof status !== "object") return "Checking…"
+  var parts = [String(status.statusText || "OneDrive")]
+  if (status.authenticated === true && String(status.syncMode || "") !== "")
+    parts.push(String(status.syncMode))
   return parts.join(" · ")
 }
 
@@ -230,6 +247,7 @@ if (typeof module !== "undefined") {
     fileMeta: fileMeta,
     folderName: folderName,
     tooltip: tooltip,
+    heroMeta: heroMeta,
     filePath: filePath
   }
 }

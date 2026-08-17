@@ -8,12 +8,21 @@ and panel-switch contracts.
 `Service.qml` is the asynchronous boundary between QML and the operating
 system. Local polling, cloud checks, and systemd control each run in a
 `Quickshell.Io.Process`; no command is constructed through a shell.
+Timed pauses stop `onedrive.service` and schedule a fixed-name transient
+`omaonedrive-resume.timer` through `systemd-run --user`. Replacing a preset or
+resuming immediately first cancels that timer. If scheduling fails after the
+service was stopped, the service is started again so a failed timer cannot
+leave sync paused unexpectedly.
 
 `onedrive-status.py` reads:
 
 - the effective `sync_dir` from `onedrive --display-config`;
 - presence (never contents) of the CLI's `refresh_token` file;
-- `onedrive.service` load, enabled, and active states;
+- effective two-way, download-only, or upload-only mode from the CLI's
+  read-only `--display-config` output;
+- `onedrive.service` load, enabled, active, failure, result, and main-process
+  exit states;
+- the next activation of the transient timed-resume user timer, when present;
 - bounded user-journal history for sync-in-progress, last-complete, and error
   state;
 - recent regular files below the configured sync directory, without following

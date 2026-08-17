@@ -13,6 +13,8 @@ Panel {
 
   property var anchorItem: null
   property var hostWidget: null
+  property bool cursorActive: false
+  property var cursorItem: null
   readonly property var barIdentity: hostWidget || root
   property alias service: oneDrive
 
@@ -26,12 +28,92 @@ Panel {
   readonly property string panelStyle: String(root.settings && root.settings.panelStyle
     ? root.settings.panelStyle : "full").toLowerCase() === "compact" ? "compact" : "full"
   readonly property var activityRows: Model.activityRows(oneDrive)
+  readonly property bool headerHasCursor: cursorActive && cursorItem === headerItem
+
+  function navigationItems() {
+    var items = []
+    if (headerItem.visible && headerItem.keyboardEnabled) items.push(headerItem)
+    if (loginAction.visible && loginAction.keyboardEnabled) items.push(loginAction)
+    if (reauthAction.visible && reauthAction.keyboardEnabled) items.push(reauthAction)
+    if (timedResumeAction.visible && timedResumeAction.keyboardEnabled) items.push(timedResumeAction)
+    if (pausePresets.visible && pause15Chip.keyboardEnabled) items.push(pause15Chip)
+    if (pausePresets.visible && pause60Chip.keyboardEnabled) items.push(pause60Chip)
+    if (pausePresets.visible && pause240Chip.keyboardEnabled) items.push(pause240Chip)
+    if (storageBlock.visible && storageBlock.keyboardEnabled) items.push(storageBlock)
+    if (activityBlock.visible) {
+      for (var index = 0; index < activityRepeater.count; index++) {
+        var row = activityRepeater.itemAt(index)
+        if (row && row.visible && row.keyboardEnabled) items.push(row)
+      }
+    }
+    if (chipRow.visible && checkChip.keyboardEnabled) items.push(checkChip)
+    if (chipRow.visible && folderChip.visible && folderChip.keyboardEnabled) items.push(folderChip)
+    if (compactActions.visible && compactCheck.keyboardEnabled) items.push(compactCheck)
+    if (compactActions.visible && compactFolder.keyboardEnabled) items.push(compactFolder)
+    return items
+  }
+
+  function setCursor(item) {
+    if (!item || item.keyboardEnabled !== true) return
+    cursorActive = true
+    cursorItem = item
+    scrollItemIntoView(item)
+  }
+
+  function ensureCursor() {
+    if (!cursorActive) return
+    var items = navigationItems()
+    if (items.length === 0) {
+      cursorItem = null
+      return
+    }
+    if (items.indexOf(cursorItem) < 0) cursorItem = items[0]
+    scrollItemIntoView(cursorItem)
+  }
+
+  function moveCursor(dx, dy) {
+    var items = navigationItems()
+    if (items.length === 0) return
+    var step = dy !== 0 ? dy : dx
+    if (step === 0) return
+    if (!cursorActive || items.indexOf(cursorItem) < 0) {
+      setCursor(step < 0 ? items[items.length - 1] : items[0])
+      return
+    }
+    var next = Math.max(0, Math.min(items.length - 1, items.indexOf(cursorItem) + (step < 0 ? -1 : 1)))
+    setCursor(items[next])
+  }
+
+  function activateCursor() {
+    if (!cursorActive || !cursorItem || cursorItem.keyboardEnabled !== true) return
+    cursorItem.keyboardActivate()
+  }
+
+  function scrollItemIntoView(item) {
+    if (!panelScroll || !item) return
+    Qt.callLater(function() {
+      if (!item) return
+      var margin = Style.space(6)
+      var point = item.mapToItem(panelScroll.contentItem, 0, 0)
+      var top = point.y
+      var bottom = top + item.height
+      var viewTop = panelScroll.contentY
+      var viewBottom = viewTop + panelScroll.height
+      var maxY = Math.max(0, panelScroll.contentHeight - panelScroll.height)
+      if (top < viewTop + margin) panelScroll.contentY = Math.max(0, top - margin)
+      else if (bottom > viewBottom - margin)
+        panelScroll.contentY = Math.min(maxY, bottom + margin - panelScroll.height)
+    })
+  }
 
   function open() {
     root.controller.show()
     oneDrive.refresh(false)
     Qt.callLater(function() {
-      if (root.opened) root.setCenterHoverRevealSuppressed(true)
+      if (root.opened) {
+        root.setCenterHoverRevealSuppressed(true)
+        keyCatcher.forceActiveFocus()
+      }
     })
   }
 
@@ -63,9 +145,26 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
+  onOpenedChanged: {
+    cursorActive = false
+    cursorItem = null
+    if (opened && panelScroll) panelScroll.contentY = 0
+  }
+  onPanelStyleChanged: ensureCursor()
+
   Service {
     id: oneDrive
     settings: root.settings
+  }
+
+  Connections {
+    target: oneDrive
+    function onAuthenticatedChanged() { root.ensureCursor() }
+    function onActivityChanged() { root.ensureCursor() }
+    function onQuotaKnownChanged() { root.ensureCursor() }
+    function onBusyChanged() { root.ensureCursor() }
+    function onResumeAtChanged() { root.ensureCursor() }
+    function onActiveChanged() { root.ensureCursor() }
   }
 
   BarIconButton {
@@ -89,9 +188,10 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      onMoveRequested: function(dx, dy) { root.moveCursor(dx, dy) }
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
-      onActivateRequested: oneDrive.openFolder()
+      onActivateRequested: root.activateCursor()
       onTextKey: function(value) {
         if (value === "r" || value === "R") oneDrive.refresh(true)
         else if (value === "p" || value === "P") oneDrive.toggleRunning()
@@ -115,31 +215,48 @@ Panel {
           width: panelScroll.width
           spacing: Style.space(10)
 
-          PanelHero {
+          Item {
+            id: headerItem
+            visible: oneDrive.authenticated
             width: parent.width
-            title: "OneDrive"
-            meta: oneDrive.statusText
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            iconOpacity: oneDrive.active ? 1.0 : 0.55
-            iconComponent: Component {
-              OneDriveIcon {
-                iconSize: Style.font.display
-                color: root.iconColor
-              }
-            }
-            trailingControl: Component {
-              ToggleSwitch {
-                visible: oneDrive.installed && oneDrive.serviceAvailable && oneDrive.authenticated
-                checked: oneDrive.active
-                busy: oneDrive.busy
-                foreground: root.foreground
-                onToggled: oneDrive.toggleRunning()
+            implicitHeight: hero.implicitHeight
+            readonly property bool keyboardEnabled: oneDrive.installed
+              && oneDrive.serviceAvailable && oneDrive.authenticated && !oneDrive.busy
+            readonly property bool ringVisible: root.headerHasCursor
+            readonly property string switchHint: root.toggleHint
+            function keyboardActivate() { oneDrive.toggleRunning() }
+            function focusHero() { root.setCursor(headerItem) }
 
-                PanelToolTip {
-                  visible: parent.containsMouse
-                  text: root.toggleHint
-                  fontFamily: root.fontFamily
+            PanelHero {
+              id: hero
+              width: parent.width
+              title: "OneDrive"
+              meta: Model.heroMeta(oneDrive)
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              iconOpacity: oneDrive.active ? 1.0 : 0.55
+              iconComponent: Component {
+                OneDriveIcon {
+                  iconSize: Style.font.display
+                  color: root.iconColor
+                }
+              }
+              trailingControl: Component {
+                ToggleSwitch {
+                  id: powerSwitch
+                  visible: oneDrive.installed && oneDrive.serviceAvailable && oneDrive.authenticated
+                  checked: oneDrive.active
+                  busy: oneDrive.busy
+                  hasCursor: headerItem.ringVisible
+                  foreground: hero.foreground
+                  onHovered: function(on) { if (on) headerItem.focusHero() }
+                  onToggled: oneDrive.toggleRunning()
+
+                  PanelToolTip {
+                    visible: powerSwitch.containsMouse
+                    text: headerItem.switchHint
+                    fontFamily: hero.fontFamily
+                  }
                 }
               }
             }
@@ -166,6 +283,7 @@ Panel {
           }
 
           ActionRow {
+            id: loginAction
             visible: oneDrive.installed && !oneDrive.authenticated
             width: parent.width
             title: "Login to OneDrive"
@@ -175,12 +293,98 @@ Panel {
             onActivated: oneDrive.login()
           }
 
+          ActionRow {
+            id: reauthAction
+            visible: oneDrive.authenticated && oneDrive.reauthRequired
+            width: parent.width
+            title: oneDrive.running ? "Pause sync to reauthenticate" : "Reauthenticate OneDrive"
+            subtitle: "Open the CLI's Microsoft authorization flow"
+            icon: "󰌋"
+            actionIcon: oneDrive.running ? "" : "󰐕"
+            actionEnabled: !oneDrive.running
+            onActivated: oneDrive.reauthenticate()
+          }
+
+          Text {
+            visible: oneDrive.authenticated && oneDrive.serviceAvailable && !oneDrive.enabled
+            width: parent.width
+            text: oneDrive.running
+              ? "Automatic startup is disabled; syncing will not resume after reboot."
+              : "Automatic startup is disabled; Resume starts syncing for this session only."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
+          ActionRow {
+            id: timedResumeAction
+            visible: oneDrive.authenticated && !oneDrive.active
+              && oneDrive.resumeAt > Date.now() / 1000
+            width: parent.width
+            title: "Resume syncing now"
+            subtitle: oneDrive.statusText
+            icon: "󰏤"
+            actionIcon: "󰐊"
+            actionEnabled: !oneDrive.busy
+            onActivated: oneDrive.resume()
+          }
+
+          Column {
+            id: pausePresets
+            visible: oneDrive.authenticated && oneDrive.serviceAvailable
+              && !oneDrive.serviceFailed && !oneDrive.resyncRequired && !oneDrive.reauthRequired
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSectionHeader {
+              text: oneDrive.active ? "PAUSE FOR" : "RESUME IN"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(6)
+
+              ActionChip {
+                id: pause15Chip
+                width: (parent.width - parent.spacing * 2) / 3
+                text: "15 min"
+                icon: "󰔛"
+                enabled: !oneDrive.busy
+                onActivated: oneDrive.pauseFor(15)
+              }
+
+              ActionChip {
+                id: pause60Chip
+                width: (parent.width - parent.spacing * 2) / 3
+                text: "1 hour"
+                icon: "󰔛"
+                enabled: !oneDrive.busy
+                onActivated: oneDrive.pauseFor(60)
+              }
+
+              ActionChip {
+                id: pause240Chip
+                width: (parent.width - parent.spacing * 2) / 3
+                text: "4 hours"
+                icon: "󰔛"
+                enabled: !oneDrive.busy
+                onActivated: oneDrive.pauseFor(240)
+              }
+            }
+          }
+
           CursorSurface {
             id: storageBlock
+            readonly property bool keyboardEnabled: storageMouse.enabled
+            function keyboardActivate() { oneDrive.refresh(true) }
             visible: oneDrive.authenticated
             width: parent.width
             foreground: root.foreground
-            hasCursor: storageMouse.containsMouse && storageMouse.enabled
+            hasCursor: (storageMouse.containsMouse || root.cursorItem === storageBlock)
+              && storageMouse.enabled
             implicitHeight: storageContent.implicitHeight + Style.space(8)
             height: implicitHeight
 
@@ -272,6 +476,7 @@ Panel {
               hoverEnabled: true
               enabled: !oneDrive.quotaKnown
               cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+              onEntered: root.setCursor(storageBlock)
               onClicked: oneDrive.refresh(true)
             }
           }
@@ -325,6 +530,7 @@ Panel {
               spacing: Style.space(3)
 
               Repeater {
+                id: activityRepeater
                 model: root.activityRows
 
                 ActivityRow {
@@ -343,6 +549,7 @@ Panel {
             spacing: Style.space(6)
 
             ActionChip {
+              id: checkChip
               width: folderChip.visible ? (chipRow.width - chipRow.spacing) / 2 : chipRow.width
               text: "Check cloud"
               icon: "󰑓"
@@ -361,11 +568,13 @@ Panel {
           }
 
           Column {
+            id: compactActions
             visible: oneDrive.authenticated && root.panelStyle === "compact"
             width: parent.width
             spacing: Style.space(5)
 
             CompactActionRow {
+              id: compactCheck
               width: parent.width
               title: "Check cloud"
               icon: "󰑓"
@@ -376,6 +585,7 @@ Panel {
             }
 
             CompactActionRow {
+              id: compactFolder
               width: parent.width
               title: "Open OneDrive folder"
               icon: "󰉋"
@@ -396,17 +606,22 @@ Panel {
     property string icon: ""
     property string actionIcon: "󰐕"
     property bool actionEnabled: true
+    readonly property bool keyboardEnabled: actionEnabled
     signal activated()
+    function keyboardActivate() { if (actionEnabled) activated() }
 
     foreground: root.foreground
+    hasCursor: (actionMouse.containsMouse || root.cursorItem === actionRow) && actionEnabled
     implicitHeight: Math.max(Style.space(54), row.implicitHeight + Style.spacing.rowPaddingX)
     height: implicitHeight
 
     MouseArea {
+      id: actionMouse
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: actionRow.actionEnabled ? Qt.PointingHandCursor : Qt.ArrowCursor
       enabled: actionRow.actionEnabled
+      onEntered: root.setCursor(actionRow)
       onClicked: actionRow.activated()
     }
 
@@ -467,11 +682,12 @@ Panel {
     property var rowData: null
     readonly property string kind: String(rowData && rowData.kind || "")
     readonly property bool fileRow: kind === "file"
+    readonly property bool keyboardEnabled: fileRow
     readonly property string title: String(rowData && rowData.title || "")
     readonly property string detail: String(rowData && rowData.detail || "")
 
     foreground: root.foreground
-    hasCursor: activityMouse.containsMouse && fileRow
+    hasCursor: (activityMouse.containsMouse || root.cursorItem === activityRow) && fileRow
     implicitHeight: Math.max(Style.space(32), activityContent.implicitHeight + Style.space(6))
     height: implicitHeight
 
@@ -492,9 +708,18 @@ Panel {
       hoverEnabled: true
       enabled: activityRow.fileRow
       cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+      onEntered: root.setCursor(activityRow)
       onClicked: oneDrive.openFile({
         path: activityRow.rowData && activityRow.rowData.path || "",
         name: activityRow.title
+      })
+    }
+
+    function keyboardActivate() {
+      if (!fileRow) return
+      oneDrive.openFile({
+        path: rowData && rowData.path || "",
+        name: title
       })
     }
 
@@ -554,11 +779,13 @@ Panel {
     id: actionChip
     property string text: ""
     property string icon: ""
+    readonly property bool keyboardEnabled: enabled
     signal activated()
+    function keyboardActivate() { if (enabled) activated() }
 
     foreground: root.foreground
     bordered: true
-    hasCursor: chipMouse.containsMouse && actionChip.enabled
+    hasCursor: (chipMouse.containsMouse || root.cursorItem === actionChip) && actionChip.enabled
     implicitHeight: Style.space(34)
     height: implicitHeight
     opacity: enabled ? 1.0 : 0.5
@@ -577,6 +804,7 @@ Panel {
       hoverEnabled: true
       enabled: actionChip.enabled
       cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+      onEntered: root.setCursor(actionChip)
       onClicked: actionChip.activated()
     }
   }
@@ -588,12 +816,14 @@ Panel {
     property string meta: ""
     property bool selected: false
     property bool actionEnabled: true
+    readonly property bool keyboardEnabled: actionEnabled
     signal activated()
+    function keyboardActivate() { if (actionEnabled) activated() }
 
     foreground: root.foreground
     current: selected
     currentFill: Style.selectedFillFor(root.foreground, Color.accent)
-    hasCursor: compactMouse.containsMouse && actionEnabled
+    hasCursor: (compactMouse.containsMouse || root.cursorItem === compactRow) && actionEnabled
     implicitHeight: Style.space(34)
     height: implicitHeight
     opacity: actionEnabled ? 1.0 : 0.5
@@ -640,6 +870,7 @@ Panel {
       hoverEnabled: true
       enabled: compactRow.actionEnabled
       cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+      onEntered: root.setCursor(compactRow)
       onClicked: compactRow.activated()
     }
   }

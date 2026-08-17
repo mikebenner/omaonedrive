@@ -12,20 +12,26 @@ BarWidget {
   readonly property var service: panelLoader.item ? panelLoader.item.service : null
   readonly property bool active: service ? service.active : false
   readonly property bool syncing: service ? service.syncing : false
+  readonly property bool starting: service ? service.activeState === "activating" : false
   readonly property bool installed: service ? service.installed : false
   readonly property bool authenticated: service ? service.authenticated : false
+  readonly property bool attention: service
+    ? service.serviceFailed || service.resyncRequired || service.reauthRequired
+    : false
   readonly property color iconColor: active
     ? (bar ? bar.barForeground : Color.foreground)
     : Qt.darker(bar ? bar.barForeground : Color.foreground, 1.55)
   readonly property string badgeKind: !installed ? "missing"
     : (!authenticated ? "login"
-      : (syncing ? "syncing"
-        : (!active ? "paused" : "")))
+      : (attention ? "attention"
+        : (syncing || starting ? "syncing"
+          : (!active ? "paused" : ""))))
   readonly property string badgeGlyph: badgeKind === "missing" ? "󰅖"
     : (badgeKind === "login" ? "󰌋"
       : (badgeKind === "paused" ? "󰏤"
-        : (badgeKind === "syncing" ? "󰑓" : "")))
-  readonly property color badgeColor: badgeKind === "login"
+        : (badgeKind === "syncing" ? "󰑓"
+          : (badgeKind === "attention" ? "󰀪" : ""))))
+  readonly property color badgeColor: badgeKind === "login" || badgeKind === "attention"
     ? (bar ? bar.urgent : Color.urgent)
     : (badgeKind === "syncing" ? Color.accent : iconColor)
   readonly property color badgeBackground: bar ? bar.background : Color.background
@@ -87,6 +93,10 @@ BarWidget {
     }
     function pause(): string {
       if (root.service) root.service.pause()
+      return "ok"
+    }
+    function pauseFor(minutes: int): string {
+      if (root.service) root.service.pauseFor(minutes)
       return "ok"
     }
     function resume(): string {

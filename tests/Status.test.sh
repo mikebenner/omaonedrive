@@ -23,7 +23,10 @@ set -euo pipefail
 printf '%s\n' "$*" >>"${FAKE_ONEDRIVE_LOG:?}"
 case " $* " in
   *" --display-config "*)
+    printf "Application version                          = onedrive v2.5.11\n"
     printf "Config option 'sync_dir'                      = %s\n" "${FAKE_SYNC_DIR:?}"
+    printf "Config option 'upload_only'                   = %s\n" "${FAKE_UPLOAD_ONLY:-false}"
+    printf "Config option 'download_only'                 = %s\n" "${FAKE_DOWNLOAD_ONLY:-true}"
     ;;
   *" --display-quota "*)
     cat <<'OUT'
@@ -53,9 +56,27 @@ SH
 cat >"$fake_bin/systemctl" <<'SH'
 #!/bin/bash
 case " $* " in
-  *" show "*) echo loaded ;;
-  *" is-active "*) echo "${FAKE_ACTIVE:-active}" ;;
-  *" is-enabled "*) echo enabled ;;
+  *" list-timers "*)
+    if [[ -n ${FAKE_RESUME_AT:-} ]]; then
+      printf '[{"next":%s,"unit":"omaonedrive-resume.timer"}]\n' "$((FAKE_RESUME_AT * 1000000))"
+    else
+      echo '[]'
+    fi
+    ;;
+  *" show "*)
+    active=${FAKE_ACTIVE:-active}
+    sub_state=dead
+    [[ $active == active ]] && sub_state=running
+    cat <<OUT
+LoadState=loaded
+ActiveState=$active
+SubState=$sub_state
+UnitFileState=${FAKE_ENABLED:-enabled}
+Result=${FAKE_RESULT:-success}
+ExecMainCode=exited
+ExecMainStatus=${FAKE_EXIT_STATUS:-0}
+OUT
+    ;;
   *) exit 1 ;;
 esac
 SH
@@ -69,12 +90,16 @@ OUT
 if [[ ${FAKE_INCOMPLETE_SYNC:-0} == 1 ]]; then
   echo '{"MESSAGE":"Starting a sync with Microsoft OneDrive","__REALTIME_TIMESTAMP":"1786788010000000"}'
 fi
+if [[ ${FAKE_REAUTH:-0} == 1 ]]; then
+  echo '{"MESSAGE":"ERROR: You will need to issue a --reauth and re-authorise this client to obtain a fresh auth token.","__REALTIME_TIMESTAMP":"1786788020000000"}'
+fi
 SH
 
 chmod +x "$fake_bin/onedrive" "$fake_bin/systemctl" "$fake_bin/journalctl"
 export FAKE_ONEDRIVE_LOG="$test_root/onedrive.log"
 export FAKE_SYNC_DIR="$sync_dir"
 export HOME="$test_home"
+export XDG_CONFIG_HOME="$test_home/.config"
 export XDG_STATE_HOME="$test_root/state"
 export PATH="$fake_bin:$PATH"
 
@@ -90,6 +115,11 @@ jq -e --arg sync_dir "$sync_dir" '
   and .syncing == false
   and .statusText == "Monitoring"
   and .syncDir == $sync_dir
+  and .syncMode == "Download only"
+  and .clientVersion == "onedrive v2.5.11"
+  and .serviceFailed == false
+  and .resyncRequired == false
+  and .reauthRequired == false
   and .lastSyncTs == 1786788000
   and .quotaKnown == false
   and .remoteStatus == "Not checked"
@@ -147,6 +177,45 @@ touch "$test_home/.config/onedrive/refresh_token"
 FAKE_ACTIVE=inactive FAKE_INCOMPLETE_SYNC=1 python3 "$root/onedrive-status.py" --limit 5 >"$test_root/paused.json"
 jq -e '.authenticated == true and .running == false and .syncing == false and .statusText == "Sync paused"' "$test_root/paused.json" >/dev/null
 
+resume_at=$(($(date +%s) + 3600))
+FAKE_ACTIVE=inactive FAKE_RESUME_AT="$resume_at" python3 "$root/onedrive-status.py" --limit 5 >"$test_root/timed-pause.json"
+jq -e --argjson resume_at "$resume_at" '
+  .running == false
+  and .resumeAt == $resume_at
+  and (.statusText | startswith("Paused · resumes in "))
+' "$test_root/timed-pause.json" >/dev/null
+
+FAKE_ACTIVE=inactive FAKE_ENABLED=disabled python3 "$root/onedrive-status.py" --limit 5 >"$test_root/disabled.json"
+jq -e '.enabled == false and .serviceFailed == false and .statusText == "Auto-start disabled"' "$test_root/disabled.json" >/dev/null
+
+FAKE_ACTIVE=activating python3 "$root/onedrive-status.py" --limit 5 >"$test_root/starting.json"
+jq -e '.activeState == "activating" and .running == false and .statusText == "Starting…"' "$test_root/starting.json" >/dev/null
+
+FAKE_ACTIVE=failed FAKE_RESULT=exit-code FAKE_EXIT_STATUS=1 python3 "$root/onedrive-status.py" --limit 5 >"$test_root/failed.json"
+jq -e '.serviceFailed == true and .resyncRequired == false and .statusText == "Attention needed"' "$test_root/failed.json" >/dev/null
+
+FAKE_ACTIVE=failed FAKE_RESULT=exit-code FAKE_EXIT_STATUS=126 python3 "$root/onedrive-status.py" --limit 5 >"$test_root/resync.json"
+jq -e '
+  .serviceFailed == true
+  and .resyncRequired == true
+  and .serviceExitStatus == 126
+  and .statusText == "Resync required"
+  and (.lastError | contains("manual --resync"))
+' "$test_root/resync.json" >/dev/null
+
+FAKE_REAUTH=1 python3 "$root/onedrive-status.py" --limit 5 >"$test_root/reauth.json"
+jq -e '
+  .authenticated == true
+  and .reauthRequired == true
+  and .statusText == "Reauthentication required"
+' "$test_root/reauth.json" >/dev/null
+
+FAKE_DOWNLOAD_ONLY=false FAKE_UPLOAD_ONLY=true python3 "$root/onedrive-status.py" --limit 5 >"$test_root/upload-only.json"
+jq -e '.syncMode == "Upload only"' "$test_root/upload-only.json" >/dev/null
+
+FAKE_DOWNLOAD_ONLY=false FAKE_UPLOAD_ONLY=false python3 "$root/onedrive-status.py" --limit 5 >"$test_root/two-way.json"
+jq -e '.syncMode == "Two-way"' "$test_root/two-way.json" >/dev/null
+
 if python3 "$root/onedrive-status.py" --service '../bad.service' >/dev/null 2>&1; then
   echo "invalid service name unexpectedly passed" >&2
   exit 1
@@ -155,9 +224,13 @@ fi
 grep -Fq '["systemctl", "--user", "stop", "onedrive.service"]' "$root/Service.qml"
 grep -Fq '["systemctl", "--user", "start", "onedrive.service"]' "$root/Service.qml"
 grep -Fq '["omarchy-launch-terminal", "onedrive"]' "$root/Service.qml"
+grep -Fq '["omarchy-launch-terminal", "onedrive", "--reauth"]' "$root/Service.qml"
+grep -Fq '"--unit=" + resumeUnit' "$root/Service.qml"
+grep -Fq '"--on-active=" + String(minutes) + "m"' "$root/Service.qml"
+grep -Fq '"/usr/bin/systemctl", "--user", "start", "onedrive.service"' "$root/Service.qml"
 if grep -Eq 'bash.*-c|--resync|--logout|--sync([^a-z-]|$)' "$root/Service.qml"; then
   echo "service boundary includes an unsafe OneDrive mutation" >&2
   exit 1
 fi
 
-echo "Status tests passed (local state, remote opt-in, cache, permissions, login and control boundaries)"
+echo "Status tests passed (local state, timed pause, remote opt-in, cache, permissions, login and control boundaries)"

@@ -15,9 +15,10 @@ omarchy plugin validate .
 ```
 
 `tests/run` covers JavaScript presentation helpers plus a fake OneDrive CLI,
-systemd user service, journal, authentication state, local files, remote quota,
-remote sync status, cache reuse, and private state permissions. The fake test
-also proves that a routine refresh does not run either cloud query.
+systemd user service and timed-resume timer, journal, authentication state,
+local files, remote quota, remote sync status, cache reuse, and private state
+permissions. The fake test also proves that a routine refresh does not run
+either cloud query.
 
 ## Disposable VM acceptance
 
@@ -38,20 +39,34 @@ The functional matrix is:
 1. CLI missing: missing-client badge and explicit installation message.
 2. CLI present but token missing: login badge and action opens a terminal.
 3. Authenticated service stopped: paused badge and resume control.
-4. Authenticated service running: quiet monitoring dot or pulsing syncing badge
+4. Disabled service: explicit automatic-start warning; failed, exit-126, and
+   expired-authorization states show attention rather than a paused badge.
+5. Authenticated service running: quiet monitoring dot or pulsing syncing badge
    plus the pause control.
-5. Explicit cloud check: storage meter, pending-change result, and cached check
+6. Timed pause: 15-minute, 1-hour, and 4-hour presets stop the service, show the
+   remaining pause, and resume it at the scheduled time. Choosing another
+   preset replaces the timer; **Resume syncing now** cancels it. Confirm the
+   timer survives an `omarchy-shell` restart, and a scheduling failure safely
+   restores syncing.
+7. Download-only, upload-only, and two-way modes appear accurately in the hero
+   and tooltip.
+8. Explicit cloud check: storage meter, pending-change result, and cached check
    time; unknown quota remains a clearly actionable state.
-6. Full layout: storage, bounded activity timeline, cloud/folder chips, and
+9. Full layout: storage, bounded activity timeline, cloud/folder chips, and
    clickable local-file activity rows.
-7. Compact layout: storage plus cloud and folder actions without the activity
+10. Compact layout: storage plus cloud and folder actions without the activity
    timeline.
-8. Sync folder and activity file rows open through the desktop session.
-9. Clean shell restart: no QML syntax, type, loader, or reference errors.
-10. Horizontal and vertical bar positions plus a light and dark Omarchy theme.
-11. Bar icon states: missing, login, paused, syncing, and monitoring each render
-    distinctly.
-12. `panelStyle` Full and Compact both render without clipping.
+11. Sync folder and activity file rows open through the desktop session.
+12. Arrow keys traverse the available toggle, login, timed-pause presets,
+    storage, activity, and action targets; Enter activates the highlighted
+    target and long activity lists scroll to keep it visible.
+13. Clean shell restart: no QML syntax, type, loader, or reference errors, and
+    a service still starting after the first poll is detected by the startup
+    refresh ramp.
+14. Horizontal and vertical bar positions plus a light and dark Omarchy theme.
+15. Bar icon states: missing, login, attention, paused, syncing, and monitoring
+    each render distinctly.
+16. `panelStyle` Full and Compact both render without clipping.
 
 Real Microsoft authentication should use a disposable test account. The
 2026-08-15 VM run additionally qualified interactive OAuth, real quota and
