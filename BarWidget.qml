@@ -146,6 +146,7 @@ BarWidget {
           radius: width / 2
           anchors.right: parent.right
           anchors.bottom: parent.bottom
+          anchors.bottomMargin: Style.space(3)
           color: root.syncing ? Color.accent : root.iconColor
           visible: root.active && root.badgeKind === ""
 
@@ -160,6 +161,7 @@ BarWidget {
         StatusBadge {
           anchors.right: parent.right
           anchors.bottom: parent.bottom
+          anchors.bottomMargin: Style.space(3)
           visible: root.badgeKind !== ""
           badgeSize: Style.space(8)
           glyph: root.badgeGlyph
