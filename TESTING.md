@@ -81,7 +81,9 @@ The functional matrix is:
 18. Resync repair opens `onedrive --sync --resync` in a terminal and the CLI
     prompts for Y/N confirmation before touching anything.
 19. While a sync runs, the hero and tooltip name the file currently uploading
-    or downloading, falling back to plain "Syncing…".
+    or downloading. Reconciliation passes identify cloud fetch, item
+    processing, local database validation, local upload scanning, and final
+    true-up phases, falling back to plain "Syncing…" only for unknown stages.
 20. The Web chip, compact web row, `W` key, and `web` IPC target all open
     OneDrive on the web.
 21. Benign client fallbacks (WebSocket monitoring unavailable, notSupported

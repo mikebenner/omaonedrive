@@ -98,6 +98,10 @@ if [[ ${FAKE_TRANSFER:-0} == 1 ]]; then
   echo '{"MESSAGE":"Downloading changes from Microsoft OneDrive","__REALTIME_TIMESTAMP":"1786788011000000"}'
   echo '{"MESSAGE":"Uploading new file ./Docs/report.pdf ... done","__REALTIME_TIMESTAMP":"1786788015000000"}'
 fi
+if [[ ${FAKE_RECONCILIATION:-0} == 1 ]]; then
+  echo '{"MESSAGE":"Performing a full scan of online data to ensure consistent local state","__REALTIME_TIMESTAMP":"1786788011000000"}'
+  echo '{"MESSAGE":"Processing 71903 applicable JSON items received from Microsoft OneDrive","__REALTIME_TIMESTAMP":"1786788015000000"}'
+fi
 if [[ ${FAKE_REAUTH:-0} == 1 ]]; then
   echo '{"MESSAGE":"ERROR: You will need to issue a --reauth and re-authorise this client to obtain a fresh auth token.","__REALTIME_TIMESTAMP":"1786788020000000"}'
 fi
@@ -258,6 +262,13 @@ jq -e '.syncing == true and .statusText == "Uploading report.pdf"' "$test_root/t
 FAKE_INCOMPLETE_SYNC=1 python3 "$root/onedrive-status.py" --limit 5 >"$test_root/syncing.json"
 jq -e '.syncing == true and .statusText == "Syncing…"' "$test_root/syncing.json" >/dev/null
 
+FAKE_INCOMPLETE_SYNC=1 FAKE_RECONCILIATION=1 python3 "$root/onedrive-status.py" --limit 5 >"$test_root/reconciliation.json"
+jq -e '
+  .syncing == true
+  and .syncStage == "Processing 71,903 cloud items…"
+  and .statusText == "Processing 71,903 cloud items…"
+' "$test_root/reconciliation.json" >/dev/null
+
 resume_at=$(($(date +%s) + 3600))
 FAKE_ACTIVE=inactive FAKE_RESUME_AT="$resume_at" python3 "$root/onedrive-status.py" --limit 5 >"$test_root/timed-pause.json"
 jq -e --argjson resume_at "$resume_at" '
@@ -309,6 +320,7 @@ grep -Fq '["omarchy-launch-terminal", "onedrive", "--reauth"]' "$root/Service.qm
 grep -Fq '["omarchy-launch-terminal", "onedrive", "--sync", "--resync"]' "$root/Service.qml"
 grep -Fq '"notify-send"' "$root/Service.qml"
 grep -Fq 'retryStaleQuotaOnOpen' "$root/Panel.qml"
+grep -Fq '(oneDrive.syncing ? "Syncing" : (oneDrive.active ? "Monitoring" : "Paused"))' "$root/Panel.qml"
 grep -Fq 'command.push("--quota")' "$root/Service.qml"
 grep -Fq 'command.push("--sync-status")' "$root/Service.qml"
 grep -Fq '"--unit=" + resumeUnit' "$root/Service.qml"

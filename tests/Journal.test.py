@@ -43,6 +43,39 @@ def test_transfer_parsing():
   assert module.parse_transfer("Fetching items from the OneDrive API for Drive ID: abc ..") is None
 
 
+def test_reconciliation_stage_parsing():
+  assert module.parse_sync_stage(
+    "Performing a full scan of online data to ensure consistent local state"
+  ) == "Preparing full reconciliation…"
+  assert module.parse_sync_stage(
+    "Fetching items from the OneDrive API for Drive ID: abc .."
+  ) == "Fetching cloud items…"
+  assert module.parse_sync_stage(
+    "Processing 71903 applicable JSON items received from Microsoft OneDrive ............"
+  ) == "Processing 71,903 cloud items…"
+  assert module.parse_sync_stage(
+    "Processing 42 applicable changes and items received from Microsoft OneDrive"
+  ) == "Processing 42 cloud items…"
+  assert module.parse_sync_stage(
+    "Performing a database consistency and integrity check on locally stored data ......"
+  ) == "Checking local sync database…"
+  assert module.parse_sync_stage(
+    "Scanning the local file system '/home/user/OneDrive' for new data to upload ......"
+  ) == "Scanning local files for uploads…"
+  assert module.parse_sync_stage(
+    "Performing a last examination of the most recent online data within Microsoft OneDrive to complete the reconciliation process"
+  ) == "Finalizing reconciliation…"
+  assert module.parse_sync_stage("unrelated message") == ""
+
+
+def test_live_reconciliation_status():
+  journal = journal_from_fixture("journal-v2.5.11-reconciliation.jsonl")
+  assert journal["syncing"] is True
+  assert journal["syncStage"] == "Processing 71,903 cloud items…"
+  assert journal["transferFile"] == ""
+  assert module.status_text(True, True, SERVICE, journal) == "Processing 71,903 cloud items…"
+
+
 def test_healthy_journal_with_benign_errors():
   journal = journal_from_fixture("journal-v2.5.11-healthy.jsonl")
   assert journal["syncing"] is True
@@ -73,13 +106,15 @@ def test_reauth_journal_with_merged_error_details():
 def main():
   tests = [
     test_transfer_parsing,
+    test_reconciliation_stage_parsing,
+    test_live_reconciliation_status,
     test_healthy_journal_with_benign_errors,
     test_reauth_journal_with_merged_error_details,
   ]
   for test in tests:
     test()
     print(f"ok - {test.__name__}")
-  print("Journal tests passed (transfer parsing, benign-error demotion, detail merging)")
+  print("Journal tests passed (transfer and reconciliation parsing, benign-error demotion, detail merging)")
 
 
 if __name__ == "__main__":

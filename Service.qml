@@ -18,6 +18,7 @@ Item {
   property bool authenticated: false
   property bool reauthRequired: false
   property bool syncing: false
+  property string syncStage: ""
   property int _desired: -1
   readonly property bool active: _desired === -1
     ? (running || activeState === "activating") : _desired === 1
@@ -198,6 +199,7 @@ Item {
     authenticated = parsed.authenticated === true
     reauthRequired = parsed.reauthRequired === true
     syncing = parsed.syncing === true
+    syncStage = String(parsed.syncStage || "")
     if (_desired !== -1 && running === (_desired === 1)) _desired = -1
     statusText = String(parsed.statusText || (installed ? "Sync paused" : "Not installed"))
     syncDir = String(parsed.syncDir || "")
