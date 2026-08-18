@@ -251,7 +251,8 @@ Panel {
 
                   Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: oneDrive.active ? "Syncing" : "Paused"
+                    text: oneDrive.activeState === "activating" ? "Starting"
+                      : (oneDrive.syncing ? "Syncing" : (oneDrive.active ? "Monitoring" : "Paused"))
                     color: root.dim
                     font.family: hero.fontFamily
                     font.pixelSize: Style.font.caption

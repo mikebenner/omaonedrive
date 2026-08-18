@@ -236,6 +236,39 @@ def parse_transfer(message):
   return direction, name, percent
 
 
+def parse_sync_stage(message):
+  """Turn the client's reconciliation log messages into concise UI status."""
+  text = re.sub(r"\s+", " ", str(message or "")).strip()
+  lowered = text.lower()
+  if "performing a full scan of online data to ensure consistent local state" in lowered:
+    return "Preparing full reconciliation…"
+  if "fetching items from the onedrive api" in lowered \
+      or "fetching /delta response from the onedrive api" in lowered \
+      or "generating a /delta response from the onedrive api" in lowered:
+    return "Fetching cloud items…"
+  processing = re.search(
+    r"processing\s+([\d,]+)\s+applicable\s+(?:json\s+items|changes\s+and\s+items)\s+received\s+from\s+microsoft\s+onedrive",
+    text,
+    re.IGNORECASE,
+  )
+  if processing:
+    try:
+      item_count = f"{int(processing.group(1).replace(',', '')):,}"
+    except ValueError:
+      item_count = processing.group(1)
+    return f"Processing {item_count} cloud items…"
+  if "performing a database consistency and integrity check on locally stored data" in lowered:
+    return "Checking local sync database…"
+  if "scanning the local file system" in lowered and "for new data to upload" in lowered:
+    return "Scanning local files for uploads…"
+  if "performing a last examination of the most recent online data" in lowered \
+      or "performing a final true-up scan of online data" in lowered:
+    return "Finalizing reconciliation…"
+  if "syncing changes from microsoft onedrive" in lowered:
+    return "Checking cloud changes…"
+  return ""
+
+
 def journal_state(service):
   exit_code, output = command_output(
     ["journalctl", "--user", "--unit", service, "--lines", "120", "--no-pager", "--output", "json"],
@@ -250,6 +283,7 @@ def journal_state(service):
     "transferFile": "",
     "transferDirection": "",
     "transferPercent": -1,
+    "syncStage": "",
   }
   if exit_code != 0:
     return result
@@ -260,6 +294,8 @@ def journal_state(service):
   last_reauth = 0
   last_transfer_ts = 0
   last_transfer = None
+  last_stage_ts = 0
+  last_stage = ""
   error_events = []
   for line in output.splitlines():
     try:
@@ -281,6 +317,10 @@ def journal_state(service):
     if transfer and timestamp >= last_transfer_ts:
       last_transfer_ts = timestamp
       last_transfer = transfer
+    stage = parse_sync_stage(message)
+    if stage and timestamp >= last_stage_ts:
+      last_stage_ts = timestamp
+      last_stage = stage
     if "starting a sync with microsoft onedrive" in lowered or "syncing changes from microsoft onedrive" in lowered:
       last_start = max(last_start, timestamp)
     if "sync with microsoft onedrive is complete" in lowered:
@@ -314,6 +354,8 @@ def journal_state(service):
   result["reauthRequired"] = last_reauth > last_complete
   if result["syncing"] and last_transfer and last_transfer_ts >= last_start:
     result["transferDirection"], result["transferFile"], result["transferPercent"] = last_transfer
+  if result["syncing"] and last_stage_ts >= last_start:
+    result["syncStage"] = last_stage
   if last_complete >= last_error:
     result["lastError"] = ""
   return result
@@ -492,6 +534,8 @@ def status_text(installed, authenticated, service, journal, resume_at=0):
       if 0 <= percent <= 100:
         text += " · " + str(percent) + "%"
       return text
+    if journal.get("syncStage"):
+      return journal["syncStage"]
     return "Syncing…"
   return "Monitoring"
 
@@ -513,6 +557,7 @@ def build_status(args):
     "transferFile": "",
     "transferDirection": "",
     "transferPercent": -1,
+    "syncStage": "",
   }
 
   directory = state_dir()
@@ -585,6 +630,7 @@ def build_status(args):
     "authenticated": authenticated,
     "reauthRequired": journal["reauthRequired"],
     "syncing": service["running"] and journal["syncing"],
+    "syncStage": journal["syncStage"] if service["running"] else "",
     "statusText": status_text(onedrive_path is not None, authenticated, service, journal, resume_at),
     "resumeAt": resume_at,
     "syncDir": str(sync_dir),

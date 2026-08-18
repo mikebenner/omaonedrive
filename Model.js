@@ -27,6 +27,7 @@ function defaultStatus() {
     authenticated: false,
     reauthRequired: false,
     syncing: false,
+    syncStage: "",
     statusText: "Unavailable",
     syncDir: "",
     syncMode: "Two-way",

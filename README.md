@@ -19,7 +19,9 @@ Captured against a real OneDrive account on a live Omarchy desktop.
 
 - Shows whether OneDrive is monitoring, syncing, paused, or needs attention,
   including the file currently being uploaded or downloaded while a sync runs,
-  with a progress percentage when the client reports one.
+  with a progress percentage when the client reports one. During reconciliation
+  passes it shows the current phase, including cloud fetch, item processing,
+  local database verification, local upload scanning, and final true-up.
 - Sends desktop notifications when OneDrive fails, needs reauthentication or a
   resync, recovers, or when cloud storage crosses 90% full. Clicking a failure
   notification opens the panel or starts the repair. Can be disabled in the

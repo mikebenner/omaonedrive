@@ -1,0 +1,4 @@
+{"MESSAGE": "Starting a sync with Microsoft OneDrive", "__REALTIME_TIMESTAMP": "1787046806000000"}
+{"MESSAGE": "Performing a full scan of online data to ensure consistent local state", "__REALTIME_TIMESTAMP": "1787046807000000"}
+{"MESSAGE": "Fetching items from the OneDrive API for Drive ID: dadfa8d422449caa ................................................................", "__REALTIME_TIMESTAMP": "1787047300000000"}
+{"MESSAGE": "Processing 71903 applicable JSON items received from Microsoft OneDrive ............", "__REALTIME_TIMESTAMP": "1787047312000000"}

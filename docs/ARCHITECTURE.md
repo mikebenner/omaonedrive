@@ -23,8 +23,8 @@ leave sync paused unexpectedly.
 - `onedrive.service` load, enabled, active, failure, result, and main-process
   exit states;
 - the next activation of the transient timed-resume user timer, when present;
-- bounded user-journal history for sync-in-progress, last-complete, and error
-  state;
+- bounded user-journal history for sync-in-progress, live reconciliation phase,
+  last-complete, and error state;
 - recent regular files below the configured sync directory, without following
   symlinks.
 
