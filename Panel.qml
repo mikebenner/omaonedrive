@@ -912,11 +912,13 @@ Panel {
     opacity: enabled ? 1.0 : 0.5
 
     Row {
+      id: actionChipContent
       anchors.centerIn: parent
       spacing: Style.space(6)
 
       Text {
         id: actionChipGlyph
+        anchors.verticalCenter: parent.verticalCenter
         text: actionChip.icon
         color: root.foreground
         font.family: root.fontFamily
@@ -932,10 +934,19 @@ Panel {
       }
 
       Text {
+        // Keep the label inside the chip border: give it only the width the
+        // chip can spare, shrinking the font slightly before eliding.
+        readonly property real availableWidth: actionChip.width - Style.space(16)
+          - (actionChip.icon !== "" ? actionChipGlyph.width + actionChipContent.spacing : 0)
+        anchors.verticalCenter: parent.verticalCenter
+        width: Math.min(implicitWidth, Math.max(0, availableWidth))
         text: actionChip.text
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
+        fontSizeMode: Text.HorizontalFit
+        minimumPixelSize: Style.font.bodySmall - 3
+        elide: Text.ElideRight
       }
     }
 
