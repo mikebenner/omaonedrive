@@ -27,10 +27,10 @@ SERVICE = {
 }
 
 
-def journal_from_fixture(name):
+def journal_from_fixture(name, now=None):
   text = (root / "tests" / "fixtures" / name).read_text()
   module.command_output = lambda command, timeout=4: (0, text)
-  return module.journal_state("onedrive.service")
+  return module.journal_state("onedrive.service", now=now)
 
 
 def test_transfer_parsing():
@@ -65,6 +65,12 @@ def test_reconciliation_stage_parsing():
   assert module.parse_sync_stage(
     "Performing a last examination of the most recent online data within Microsoft OneDrive to complete the reconciliation process"
   ) == "Finalizing reconciliation…"
+  assert module.parse_sync_stage(
+    "Fetching items from the OneDrive API for Drive ID: abc ...Internet connectivity to Microsoft OneDrive service has been interrupted .. re-trying in the background"
+  ) == "Connection interrupted · retrying…"
+  assert module.parse_sync_stage(
+    "Retrying the respective Microsoft Graph API call for Internal Thread ID: abc"
+  ) == "Connection interrupted · retrying…"
   assert module.parse_sync_stage("unrelated message") == ""
 
 
@@ -103,6 +109,66 @@ def test_reauth_journal_with_merged_error_details():
   assert module.status_text(True, True, SERVICE, journal) == "Reauthentication required"
 
 
+def test_network_error_recovered_by_later_sync():
+  journal = journal_from_fixture("journal-v2.5.11-network-recovery.jsonl")
+  assert journal["syncing"] is True
+  assert journal["syncStage"] == "Connection interrupted · retrying…"
+  assert journal["lastError"] == ""
+  errors = [event for event in journal["events"] if event["kind"] == "error"]
+  assert len(errors) == 1
+  assert errors[0]["recovered"] is True
+  assert "Failed sending data to the peer" in errors[0]["text"]
+
+
+def test_live_inotify_upload_shows_transfer():
+  journal = journal_from_fixture("journal-v2.5.11-inotify-upload-live.jsonl", now=1787159315)
+  assert journal["syncing"] is True
+  assert journal["transferDirection"] == "Uploading"
+  assert journal["transferFile"] == "all-hands recording.mp4"
+  assert journal["transferPercent"] == 66
+  assert journal["syncStage"] == "", "a finished pass's stage must not linger over a live upload"
+  assert module.status_text(True, True, SERVICE, journal) == "Uploading all-hands recording.mp4 · 66%"
+
+
+def test_live_inotify_upload_completion_settles():
+  journal = journal_from_fixture("journal-v2.5.11-inotify-upload-done.jsonl", now=1787159330)
+  assert journal["syncing"] is False
+  assert journal["lastSyncTs"] == 1787159319, "a finished live upload must refresh the synced-ago meta"
+  assert module.status_text(True, True, SERVICE, journal) == "Monitoring"
+
+
+def test_stale_live_upload_is_not_syncing():
+  journal = journal_from_fixture("journal-v2.5.11-inotify-upload-live.jsonl", now=1787159311 + 3600)
+  assert journal["syncing"] is False, "an hour-old abandoned progress line must not pin the syncing state"
+
+
+def test_integrity_failure_recovered_and_dbus_noise_hidden():
+  journal = journal_from_fixture("journal-v2.5.11-integrity-recovery.jsonl", now=1787160180)
+  assert journal["syncing"] is False
+  assert journal["lastError"] == ""
+  errors = [event for event in journal["events"] if event["kind"] == "error"]
+  assert len(errors) == 1, "the newest kept error must be the integrity failure"
+  assert errors[0]["recovered"] is True
+  assert "integrity failure" in errors[0]["text"].lower()
+  assert not any("d-bus" in event["text"].lower() for event in journal["events"]), \
+    "the client's notification-daemon complaint is environment noise, not a sync error"
+  assert module.status_text(True, True, SERVICE, journal) == "Monitoring"
+
+
+def test_interruption_stage_outranks_frozen_transfer():
+  journal = {
+    "syncing": True,
+    "syncStage": "Connection interrupted · retrying…",
+    "transferFile": "board-review recording.mp4",
+    "transferDirection": "Uploading",
+    "transferPercent": 50,
+    "reauthRequired": False,
+    "lastError": "",
+  }
+  assert module.status_text(True, True, SERVICE, journal) == "Connection interrupted · retrying…", \
+    "a live interruption must not hide behind a stale progress percentage"
+
+
 def main():
   tests = [
     test_transfer_parsing,
@@ -110,6 +176,12 @@ def main():
     test_live_reconciliation_status,
     test_healthy_journal_with_benign_errors,
     test_reauth_journal_with_merged_error_details,
+    test_network_error_recovered_by_later_sync,
+    test_live_inotify_upload_shows_transfer,
+    test_live_inotify_upload_completion_settles,
+    test_stale_live_upload_is_not_syncing,
+    test_integrity_failure_recovered_and_dbus_noise_hidden,
+    test_interruption_stage_outranks_frozen_transfer,
   ]
   for test in tests:
     test()

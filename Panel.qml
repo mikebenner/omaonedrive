@@ -799,6 +799,7 @@ Panel {
     property var rowData: null
     readonly property string kind: String(rowData && rowData.kind || "")
     readonly property bool fileRow: kind === "file"
+    readonly property bool recovered: rowData && rowData.recovered === true
     readonly property bool keyboardEnabled: fileRow
     readonly property string title: String(rowData && rowData.title || "")
     readonly property string detail: String(rowData && rowData.detail || "")
@@ -864,7 +865,8 @@ Panel {
         Text {
           Layout.fillWidth: true
           text: activityRow.title
-          color: activityRow.kind === "error" ? root.urgent : root.foreground
+          color: activityRow.kind === "error" && !activityRow.recovered
+            ? root.urgent : root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
           elide: Text.ElideRight

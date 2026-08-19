@@ -1,0 +1,18 @@
+{"MESSAGE": "New items to upload to Microsoft OneDrive: 1", "__REALTIME_TIMESTAMP": "1787160044000000"}
+{"MESSAGE": "Uploading: Documents/board-review recording.mp4 ... 0%   |  ETA    --:--:--", "__REALTIME_TIMESTAMP": "1787160045068966"}
+{"MESSAGE": "Uploading: Documents/board-review recording.mp4 ... 50%  |  ETA    00:00:10", "__REALTIME_TIMESTAMP": "1787160055499632"}
+{"MESSAGE": "ERROR: Encountered a std.net.curl.CurlException:", "__REALTIME_TIMESTAMP": "1787160095770388"}
+{"MESSAGE": "  Error Message:    Failed sending data to the peer on handle 5646FC616B30", "__REALTIME_TIMESTAMP": "1787160095770388"}
+{"MESSAGE": "  Calling Function: onedrive.OneDriveApi.uploadFragment", "__REALTIME_TIMESTAMP": "1787160095770388"}
+{"MESSAGE": "  Line number:      1691", "__REALTIME_TIMESTAMP": "1787160095770388"}
+{"MESSAGE": "Retrying the respective Microsoft Graph API call for Internal Thread ID: f1hn9OYazQt8wZEp (Timestamp: 2026-Aug-19 20:21:36) ...", "__REALTIME_TIMESTAMP": "1787160096770484"}
+{"MESSAGE": "Uploading: Documents/board-review recording.mp4 ... 100% | DONE in 00:01:00", "__REALTIME_TIMESTAMP": "1787160105436574"}
+{"MESSAGE": "Uploading new file: Documents/board-review recording.mp4 ... done", "__REALTIME_TIMESTAMP": "1787160105436907"}
+{"MESSAGE": "WARNING: Online file integrity failure for: Documents/board-review recording.mp4", "__REALTIME_TIMESTAMP": "1787160105437032"}
+{"MESSAGE": "Unable to send notification to the D-Bus message bus daemon, disabling GUI notifications: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name is not activatable", "__REALTIME_TIMESTAMP": "1787160105437051"}
+{"MESSAGE": "To disable the integrity checking of uploaded files use --disable-upload-validation", "__REALTIME_TIMESTAMP": "1787160105437051"}
+{"MESSAGE": "Attempting to contact the Microsoft OneDrive Service", "__REALTIME_TIMESTAMP": "1787160161785141"}
+{"MESSAGE": "Successfully reached the Microsoft OneDrive Service", "__REALTIME_TIMESTAMP": "1787160162244580"}
+{"MESSAGE": "Starting a sync with Microsoft OneDrive", "__REALTIME_TIMESTAMP": "1787160162245080"}
+{"MESSAGE": "Syncing changes from Microsoft OneDrive ...", "__REALTIME_TIMESTAMP": "1787160162605254"}
+{"MESSAGE": "Sync with Microsoft OneDrive is complete", "__REALTIME_TIMESTAMP": "1787160170000000"}

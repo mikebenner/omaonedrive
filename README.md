@@ -5,9 +5,21 @@ OneDrive for the Omarchy Quattro bar. OmaOneDrive connects to the installed
 systemd user service, and presents the same sort of compact status panel as
 Omarchy's Dropbox widget.
 
+## Demo
+
+![OmaOneDrive demo: a file dropped into the sync folder uploads with live progress, storage is refreshed, sync is paused and resumed, and a real network interruption mid-upload is reported, retried, and recovered](docs/images/demo.gif)
+
+Everything in the demo happened for real on a live Omarchy desktop: a file
+dropped into the sync folder uploads with live progress, sync is paused and
+resumed from the panel, and the network is physically cut mid-upload —
+OmaOneDrive reports the interruption, the client's retries, the attention
+state, and the recovery exactly as the client logged them.
+
 ## Screenshots
 
 ![OmaOneDrive Full panel showing sync status, cloud storage, and a recent activity timeline](docs/images/panel-full.png)
+
+![OmaOneDrive panel showing a recovered upload integrity failure as a neutral activity row](docs/images/panel-recovered.png)
 
 ![OmaOneDrive Compact panel showing storage and the primary actions](docs/images/panel-compact.png)
 
@@ -19,9 +31,14 @@ Captured against a real OneDrive account on a live Omarchy desktop.
 
 - Shows whether OneDrive is monitoring, syncing, paused, or needs attention,
   including the file currently being uploaded or downloaded while a sync runs,
-  with a progress percentage when the client reports one. During reconciliation
-  passes it shows the current phase, including cloud fetch, item processing,
-  local database verification, local upload scanning, and final true-up.
+  with a progress percentage when the client reports one. Uploads the client
+  starts on its own when it notices a local change — outside a full sync
+  pass — are shown live the same way, and completing one refreshes the
+  synced-ago meta. During reconciliation passes it shows the current phase,
+  including cloud fetch, item processing, local database verification, local
+  upload scanning, and final true-up. If connectivity drops mid-transfer, the
+  status reports the interruption and the client's retries instead of
+  freezing on a stale percentage.
 - Sends desktop notifications when OneDrive fails, needs reauthentication or a
   resync, recovers, or when cloud storage crosses 90% full. Clicking a failure
   notification opens the panel or starts the repair. Can be disabled in the
@@ -43,8 +60,12 @@ Captured against a real OneDrive account on a live Omarchy desktop.
   past 90% full.
 - Merges service errors and recent local changes into an honest activity
   timeline. Multi-line CLI error blocks are folded into one readable row, and
-  known-benign fallbacks (like WebSocket monitoring being unavailable) never
-  raise attention or clutter the feed.
+  known-benign fallbacks (WebSocket monitoring being unavailable, or the
+  client failing to reach a desktop notification daemon) never raise
+  attention or clutter the feed. Errors followed by a confirmed successful
+  sync — including connection interruptions and upload integrity failures
+  the client detects and re-uploads — remain visible as neutral recovered
+  events instead of continuing to look active.
 - Offers a Full layout with storage and recent activity, and a shorter Compact
   layout with storage and primary actions.
 - Supports arrow-key navigation and Enter activation across panel actions and

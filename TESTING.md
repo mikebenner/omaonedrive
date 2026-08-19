@@ -84,11 +84,21 @@ The functional matrix is:
     or downloading. Reconciliation passes identify cloud fetch, item
     processing, local database validation, local upload scanning, and final
     true-up phases, falling back to plain "Syncing…" only for unknown stages.
+    Uploads the client starts on its own after noticing a local change —
+    outside a sync pass — show the same live file name and progress, count as
+    syncing for the bar badge, refresh the synced-ago meta on completion, and
+    an abandoned progress line older than ten minutes does not pin the
+    syncing state.
 20. The Web chip, compact web row, `W` key, and `web` IPC target all open
     OneDrive on the web.
 21. Benign client fallbacks (WebSocket monitoring unavailable, notSupported
-    subscription errors) appear in neither the activity feed nor lastError,
-    and multi-line CLI error blocks fold their detail lines into one row.
+    subscription errors, notification-daemon failures) appear in neither the
+    activity feed nor lastError, multi-line CLI error blocks fold their
+    detail lines into one row, and a later successful sync demotes a
+    transient network error or upload integrity failure to a neutral
+    recovered event with a state-specific title. Live connection retries say
+    so instead of retaining a stale reconciliation stage, and the
+    interruption status outranks a frozen transfer percentage.
 22. Cloud-check failure lines show the age of the failed attempt.
 23. Opening the panel retries a failed storage check once when the failure is
     older than five minutes; a fresh failure is not retried, and Verify sync

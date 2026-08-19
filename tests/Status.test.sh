@@ -89,6 +89,12 @@ cat >"$fake_bin/journalctl" <<'SH'
 #!/bin/bash
 cat <<'OUT'
 {"MESSAGE":"Starting a sync with Microsoft OneDrive","__REALTIME_TIMESTAMP":"1786787990000000"}
+OUT
+if [[ ${FAKE_RECOVERED_NETWORK:-0} == 1 ]]; then
+  echo '{"MESSAGE":"ERROR: Encountered a std.net.curl.CurlException:","__REALTIME_TIMESTAMP":"1786787995000000"}'
+  echo '{"MESSAGE":"  Error Message: Failed sending data to the peer","__REALTIME_TIMESTAMP":"1786787995000000"}'
+fi
+cat <<'OUT'
 {"MESSAGE":"Sync with Microsoft OneDrive is complete","__REALTIME_TIMESTAMP":"1786788000000000"}
 OUT
 if [[ ${FAKE_INCOMPLETE_SYNC:-0} == 1 ]]; then
@@ -104,6 +110,11 @@ if [[ ${FAKE_RECONCILIATION:-0} == 1 ]]; then
 fi
 if [[ ${FAKE_REAUTH:-0} == 1 ]]; then
   echo '{"MESSAGE":"ERROR: You will need to issue a --reauth and re-authorise this client to obtain a fresh auth token.","__REALTIME_TIMESTAMP":"1786788020000000"}'
+fi
+if [[ ${FAKE_LIVE_UPLOAD:-0} == 1 ]]; then
+  now_us=$(( $(date +%s) * 1000000 ))
+  echo "{\"MESSAGE\":\"New items to upload to Microsoft OneDrive: 1\",\"__REALTIME_TIMESTAMP\":\"$(( now_us - 20000000 ))\"}"
+  echo "{\"MESSAGE\":\"Uploading: Documents/all-hands recording.mp4 ... 66%  |  ETA    00:00:10\",\"__REALTIME_TIMESTAMP\":\"$(( now_us - 5000000 ))\"}"
 fi
 SH
 
@@ -149,6 +160,22 @@ if grep -q -- '--display-quota\|--display-sync-status' "$FAKE_ONEDRIVE_LOG"; the
   echo "local refresh unexpectedly contacted OneDrive" >&2
   exit 1
 fi
+
+FAKE_LIVE_UPLOAD=1 python3 "$root/onedrive-status.py" --limit 5 >"$test_root/live-upload.json"
+jq -e '
+  .syncing == true
+  and .statusText == "Uploading all-hands recording.mp4 · 66%"
+' "$test_root/live-upload.json" >/dev/null
+
+FAKE_RECOVERED_NETWORK=1 python3 "$root/onedrive-status.py" --limit 5 >"$test_root/recovered-network.json"
+jq -e '
+  .lastError == ""
+  and any(.activity[];
+    .kind == "error"
+    and .recovered == true
+    and .title == "Connection interruption — recovered"
+    and (.detail | contains("Failed sending data to the peer")))
+' "$test_root/recovered-network.json" >/dev/null
 
 remote_output="$test_root/remote.json"
 python3 "$root/onedrive-status.py" --remote --limit 5 >"$remote_output"

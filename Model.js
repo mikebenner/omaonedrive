@@ -205,6 +205,7 @@ function activityGlyph(row) {
   if (!row || typeof row !== "object") return ""
   if (row.kind === "file") return fileGlyph(row.title)
   if (row.kind === "sync") return "󰄬"
+  if (row.kind === "error" && row.recovered === true) return "󰄬"
   if (row.kind === "error") return "󰀪"
   return ""
 }

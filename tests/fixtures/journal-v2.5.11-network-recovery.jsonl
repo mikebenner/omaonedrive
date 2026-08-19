@@ -1,0 +1,17 @@
+{"MESSAGE": "Starting a sync with Microsoft OneDrive", "__REALTIME_TIMESTAMP": "1787151785000000"}
+{"MESSAGE": "Syncing changes from Microsoft OneDrive ...", "__REALTIME_TIMESTAMP": "1787151785000000"}
+{"MESSAGE": "Sync with Microsoft OneDrive is complete", "__REALTIME_TIMESTAMP": "1787151797000000"}
+{"MESSAGE": "Uploading: Al-Rabie3/Orders/Driver/contract.xlsx ... 0%", "__REALTIME_TIMESTAMP": "1787151838000000"}
+{"MESSAGE": "ERROR: Encountered a std.net.curl.CurlException:", "__REALTIME_TIMESTAMP": "1787151842000000"}
+{"MESSAGE": "  Error Message:    Failed sending data to the peer on handle 55C8D2279B80", "__REALTIME_TIMESTAMP": "1787151842000000"}
+{"MESSAGE": "  Calling Function: onedrive.OneDriveApi.uploadFragment", "__REALTIME_TIMESTAMP": "1787151842000000"}
+{"MESSAGE": "Retrying the respective Microsoft Graph API call for Internal Thread ID: xw3Jz97suH5FfRPp", "__REALTIME_TIMESTAMP": "1787151843000000"}
+{"MESSAGE": "Uploading: Al-Rabie3/Orders/Driver/contract.xlsx ... 100% | DONE", "__REALTIME_TIMESTAMP": "1787151852000000"}
+{"MESSAGE": "Uploading new file: Al-Rabie3/Orders/Driver/contract.xlsx ... done", "__REALTIME_TIMESTAMP": "1787151852000000"}
+{"MESSAGE": "Starting a sync with Microsoft OneDrive", "__REALTIME_TIMESTAMP": "1787152098000000"}
+{"MESSAGE": "Syncing changes from Microsoft OneDrive ...", "__REALTIME_TIMESTAMP": "1787152098000000"}
+{"MESSAGE": "Sync with Microsoft OneDrive is complete", "__REALTIME_TIMESTAMP": "1787152110000000"}
+{"MESSAGE": "Starting a sync with Microsoft OneDrive", "__REALTIME_TIMESTAMP": "1787152410000000"}
+{"MESSAGE": "Performing a full scan of online data to ensure consistent local state", "__REALTIME_TIMESTAMP": "1787152412000000"}
+{"MESSAGE": "Fetching items from the OneDrive API for Drive ID: dadfa8d422449caa ......Internet connectivity to Microsoft OneDrive service has been interrupted .. re-trying in the background", "__REALTIME_TIMESTAMP": "1787152480000000"}
+{"MESSAGE": "Retrying the respective Microsoft Graph API call for Internal Thread ID: A4CJdnYBLzy6w2pX", "__REALTIME_TIMESTAMP": "1787152482000000"}

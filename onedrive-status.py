@@ -213,7 +213,15 @@ ERROR_DETAIL_RE = re.compile(r"^\s*Error (Message|Reason|Code):\s*(.+)$", re.IGN
 # The client handles these itself and keeps syncing (WebSocket near-real-time
 # monitoring is unavailable for some account types; the client falls back to
 # interval polling), so they are not worth an attention state or activity row.
-BENIGN_ERROR_MARKERS = ("websocket", "notsupported")
+BENIGN_ERROR_MARKERS = ("websocket", "notsupported", "unable to send notification")
+
+# The client uploads inotify-detected local changes outside a full sync pass,
+# without the "Starting a sync"/"complete" bracket. A progress line older than
+# this is treated as an abandoned upload rather than one still running.
+LIVE_TRANSFER_STALE_SEC = 600
+TRANSFER_DONE_RE = re.compile(
+  r"^\s*(?:Uploading|Downloading)\b.*?(?:\|\s*DONE\b|\.\.\.\s*done\b)", re.IGNORECASE
+)
 
 
 def parse_transfer(message):
@@ -240,6 +248,9 @@ def parse_sync_stage(message):
   """Turn the client's reconciliation log messages into concise UI status."""
   text = re.sub(r"\s+", " ", str(message or "")).strip()
   lowered = text.lower()
+  if "internet connectivity to microsoft onedrive service has been interrupted" in lowered \
+      or "retrying the respective microsoft graph api call" in lowered:
+    return "Connection interrupted · retrying…"
   if "performing a full scan of online data to ensure consistent local state" in lowered:
     return "Preparing full reconciliation…"
   if "fetching items from the onedrive api" in lowered \
@@ -269,7 +280,8 @@ def parse_sync_stage(message):
   return ""
 
 
-def journal_state(service):
+def journal_state(service, now=None):
+  now = int(time.time()) if now is None else now
   exit_code, output = command_output(
     ["journalctl", "--user", "--unit", service, "--lines", "120", "--no-pager", "--output", "json"],
     timeout=5,
@@ -296,6 +308,9 @@ def journal_state(service):
   last_transfer = None
   last_stage_ts = 0
   last_stage = ""
+  live_start = 0
+  live_done = 0
+  live_progress = 0
   error_events = []
   for line in output.splitlines():
     try:
@@ -317,6 +332,12 @@ def journal_state(service):
     if transfer and timestamp >= last_transfer_ts:
       last_transfer_ts = timestamp
       last_transfer = transfer
+    if TRANSFER_DONE_RE.match(message):
+      live_done = max(live_done, timestamp)
+    elif transfer:
+      live_progress = max(live_progress, timestamp)
+    if "new items to upload to microsoft onedrive" in lowered:
+      live_start = max(live_start, timestamp)
     stage = parse_sync_stage(message)
     if stage and timestamp >= last_stage_ts:
       last_stage_ts = timestamp
@@ -327,7 +348,7 @@ def journal_state(service):
       last_complete = max(last_complete, timestamp)
       if timestamp > 0:
         result["events"].append({"kind": "sync", "ts": timestamp, "text": "Sync complete"})
-    if any(marker in lowered for marker in ("error:", "fatal:", "sync aborted", "requires a --resync")):
+    if any(marker in lowered for marker in ("error:", "fatal:", "sync aborted", "requires a --resync", "integrity failure")):
       cleaned_message = re.sub(r"\s+", " ", message).strip()[:180]
       if timestamp > 0:
         error_events.append({"kind": "error", "ts": timestamp, "text": cleaned_message})
@@ -342,6 +363,8 @@ def journal_state(service):
     event for event in error_events
     if not any(marker in event["text"].lower() for marker in BENIGN_ERROR_MARKERS)
   ]
+  for event in kept_errors:
+    event["recovered"] = last_complete >= event["ts"]
   result["events"].extend(kept_errors)
   if kept_errors:
     newest = max(kept_errors, key=lambda event: event["ts"])
@@ -349,12 +372,22 @@ def journal_state(service):
     result["lastError"] = newest["text"]
 
   result["events"] = sorted(result["events"], key=lambda event: event["ts"], reverse=True)[:MAX_SERVICE_EVENTS]
-  result["lastSyncTs"] = last_complete
-  result["syncing"] = last_start > last_complete
+  pass_syncing = last_start > last_complete
+  live_evidence = max(live_start, live_progress)
+  live_syncing = (
+    not pass_syncing
+    and live_evidence > max(live_done, last_complete)
+    and now - live_evidence <= LIVE_TRANSFER_STALE_SEC
+  )
+  result["lastSyncTs"] = last_complete if pass_syncing else max(last_complete, live_done)
+  result["syncing"] = pass_syncing or live_syncing
   result["reauthRequired"] = last_reauth > last_complete
-  if result["syncing"] and last_transfer and last_transfer_ts >= last_start:
+  if last_transfer and (
+    (pass_syncing and last_transfer_ts >= last_start)
+    or (live_syncing and last_transfer_ts >= live_evidence)
+  ):
     result["transferDirection"], result["transferFile"], result["transferPercent"] = last_transfer
-  if result["syncing"] and last_stage_ts >= last_start:
+  if (pass_syncing and last_stage_ts >= last_start) or (live_syncing and last_stage_ts >= live_evidence):
     result["syncStage"] = last_stage
   if last_complete >= last_error:
     result["lastError"] = ""
@@ -527,6 +560,8 @@ def status_text(installed, authenticated, service, journal, resume_at=0):
   if not service["running"]:
     return "Sync paused"
   if journal["syncing"]:
+    if journal.get("syncStage") == "Connection interrupted · retrying…":
+      return journal["syncStage"]
     transfer_file = journal.get("transferFile", "")
     if transfer_file:
       text = journal.get("transferDirection", "Syncing") + " " + transfer_file
@@ -595,17 +630,30 @@ def build_status(args):
   elif service["serviceFailed"] and not local_error:
     local_error = "OneDrive service failed"
   files = cache.get("files", [])
-  activity = [
-    {
+  activity = []
+  for event in journal["events"]:
+    if event["ts"] <= 0:
+      continue
+    recovered = event["kind"] == "error" and event.get("recovered") is True
+    title = event["text"]
+    detail = ""
+    if recovered:
+      lowered = title.lower()
+      if "curl" in lowered or "failed sending data to the peer" in lowered:
+        title = "Connection interruption — recovered"
+      elif "integrity failure" in lowered:
+        title = "Upload integrity failure — recovered"
+      else:
+        title = "Sync error — recovered"
+      detail = re.sub(r"^(?:ERROR|WARNING):\s*", "", event["text"], flags=re.IGNORECASE)
+    activity.append({
       "kind": event["kind"],
+      "recovered": recovered,
       "ts": event["ts"],
-      "title": event["text"],
-      "detail": "",
+      "title": title,
+      "detail": detail,
       "path": "",
-    }
-    for event in journal["events"]
-    if event["ts"] > 0
-  ]
+    })
   recent_files = []
   for row in files:
     modified_ts = row.get("modifiedTs", 0)

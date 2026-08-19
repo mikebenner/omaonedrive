@@ -82,6 +82,7 @@ test("activity metadata and glyphs describe recent rows", () => {
   assert.equal(Model.activityGlyph({ kind: "file", title: "report.pdf" }), Model.fileGlyph("report.pdf"))
   assert.equal(Model.activityGlyph({ kind: "sync" }), "󰄬")
   assert.equal(Model.activityGlyph({ kind: "error" }), "󰀪")
+  assert.equal(Model.activityGlyph({ kind: "error", recovered: true }), "󰄬")
   assert.equal(Model.syncMeta(1000, 1000 * 1000 + 3 * 60 * 1000), "synced 3m ago")
   assert.equal(Model.syncMeta(1000, 1000 * 1000 + 45 * 1000), "synced Just now")
   assert.equal(Model.syncMeta(0), "")
