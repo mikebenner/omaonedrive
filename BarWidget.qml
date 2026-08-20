@@ -8,6 +8,9 @@ import "Model.js" as Model
 BarWidget {
   id: root
   moduleName: "io.github.salemsayed.omaonedrive"
+  // Moving a bar widget briefly overlaps its old and replacement instances.
+  // Wait for the retired slot to release this process-wide IPC target.
+  property bool ipcRegistrationReady: false
 
   readonly property var service: panelLoader.item ? panelLoader.item.service : null
   readonly property bool active: service ? service.active : false
@@ -64,6 +67,13 @@ BarWidget {
 
   onBarChanged: injectPanel()
   onSettingsChanged: injectPanel()
+  Component.onCompleted: ipcRegistrationTimer.start()
+
+  Timer {
+    id: ipcRegistrationTimer
+    interval: 100
+    onTriggered: root.ipcRegistrationReady = true
+  }
 
   Loader {
     id: panelLoader
@@ -77,6 +87,7 @@ BarWidget {
   }
 
   IpcHandler {
+    enabled: root.ipcRegistrationReady
     target: root.moduleName
     function open(): void { root.open() }
     function close(): void { root.close() }
