@@ -625,7 +625,7 @@ Panel {
             ActionChip {
               id: checkChip
               width: chipRow.chipWidth
-              text: oneDrive.quotaChecking ? "Refreshing…" : "Refresh storage"
+              text: oneDrive.quotaChecking ? "Refreshing…" : "Storage"
               icon: "󰑓"
               spinning: oneDrive.quotaChecking
               enabled: !oneDrive.busy

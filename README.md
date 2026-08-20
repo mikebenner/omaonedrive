@@ -93,7 +93,7 @@ Controls:
 
 Routine 30-second refreshes are local: they inspect the user service, its
 journal, the configured sync path, and cached presentation data. Only the
-explicit **Refresh storage** action runs `onedrive --display-quota` — with one
+explicit **Storage** refresh action runs `onedrive --display-quota` — with one
 exception: if the last storage check failed more than five minutes ago,
 opening the panel retries it once. The separate **Verify sync** action runs
 `onedrive --display-sync-status` to compare every file with the cloud, may
