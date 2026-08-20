@@ -90,14 +90,3 @@ Feedback and bug reports are very welcome 🙌
 > Two layouts: Full with storage and the activity timeline, Compact with storage
 > and the two actions. Bar badges separate missing-client, login, paused and
 > syncing from a healthy monitoring dot.
-
-## Notes
-
-- It drives the existing [OneDrive Client for Linux](https://github.com/abraunegg/onedrive);
-  it is not a OneDrive client itself and bundles nothing. Say so if anyone asks
-  what it installs.
-- Pause/resume is exactly `systemctl --user stop/start onedrive.service`. The
-  refresh token is never read — only its presence is checked.
-- The marketplace listing is flagged for maintainer review because the plugin
-  manages a service, which is expected for what it does. Link the repository
-  until that listing is approved.

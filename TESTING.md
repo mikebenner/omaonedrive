@@ -1,113 +1,76 @@
-# Verification guide
+# Testing
 
-The completed disposable-VM results are recorded in
-[the VM test report](docs/VM-TEST-REPORT.md).
+Disposable-VM results are in [the VM test report](docs/VM-TEST-REPORT.md).
 
-## Automated checks
+## Automated
 
 ```bash
-python3 -m py_compile onedrive-status.py
-python3 -m json.tool manifest.json >/dev/null
-shellcheck tests/run tests/Status.test.sh
 tests/run
+shellcheck tests/run tests/Status.test.sh
 omarchy plugin validate .
-/usr/lib/qt6/bin/qmllint -I ~/.cache/omarchy-shell-ref *.qml
+/usr/lib/qt6/bin/qmllint -I ~/.cache/omarchy-shell-ref *.qml   # optional
 ```
 
-`tests/run` covers JavaScript presentation helpers plus a fake OneDrive CLI,
-systemd user service and timed-resume timer, journal, authentication state,
-local files, remote quota, remote sync status, cache reuse, and private state
-permissions. It also covers cloud failure recovery and timeout classification,
-proves that quota and full-drive status retries do not clear each other's
-errors or last successful values, and proves that a routine refresh does not
-run either cloud query.
+`tests/run` covers the presentation helpers and a fake OneDrive CLI, service,
+timer, journal, authentication state, local files, quota, sync status, cache
+reuse and state permissions — including that a routine refresh never runs a
+cloud query and that quota and sync-status failures never clear each other.
 
-## Disposable VM acceptance
+## In the shell
 
-Use an Omarchy Quattro VM with no host block device attached. Install the real
-plugin checkout, then verify:
+Use an Omarchy Quattro VM with no host block device attached:
 
 ```bash
-omarchy plugin validate .
 omarchy plugin add file://$HOME/Coding/omarchy-onedrive --enable --yes
 omarchy bar move io.github.salemsayed.omaonedrive --section right --index 0
-omarchy plugin list --json | jq
 omarchy-shell io.github.salemsayed.omaonedrive status
 journalctl --user -u omarchy-shell -n 200 --no-pager
 ```
 
-The functional matrix is:
+Check each state and control:
 
-1. CLI missing: missing-client badge and explicit installation message.
-2. CLI present but token missing: login badge and action opens a terminal.
-3. Authenticated service stopped: paused badge and resume control.
-4. Disabled service: explicit automatic-start warning; failed, exit-126, and
-   expired-authorization states show attention rather than a paused badge.
-5. Authenticated service running: quiet monitoring dot or pulsing syncing badge
-   plus the pause control.
-6. Timed pause: 15-minute, 1-hour, and 4-hour presets stop the service, show the
-   remaining pause, and resume it at the scheduled time. Choosing another
-   preset replaces the timer; **Resume syncing now** cancels it. Confirm the
-   timer survives an `omarchy-shell` restart, and a scheduling failure safely
-   restores syncing.
-7. Download-only, upload-only, and two-way modes appear accurately in the hero
-   and tooltip.
-8. Explicit cloud checks: the normal storage action shows a spinner/countdown
-   and only queries quota; the full-drive status action is labeled optional and
-   slow. Disconnect the network during each check and confirm its last good
-   value remains, its own retry notice appears, and the local service does not
-   enter an error state. A successful quota retry must not clear a full-status
-   error, or vice versa.
-9. Full layout: storage, bounded activity timeline, cloud/folder chips, and
-   clickable local-file activity rows.
-10. Compact layout: storage plus quota, optional full-status, and folder actions
-    without the activity timeline.
-11. Sync folder and activity file rows open through the desktop session.
-12. Arrow keys traverse the available toggle, login, storage, activity,
-    timed-pause presets, and action targets in visual order; Enter activates
-    the highlighted target and long activity lists scroll to keep it visible.
-13. Clean shell restart: no QML syntax, type, loader, or reference errors, and
-    a service still starting after the first poll is detected by the startup
-    refresh ramp.
-14. Horizontal and vertical bar positions plus a light and dark Omarchy theme.
-15. Bar icon states: missing, login, attention, paused, syncing, and monitoring
-    each render distinctly.
-16. `panelStyle` Full and Compact both render without clipping.
-17. Desktop notifications fire once per edge: service failure, resync required,
-    reauthentication required, recovery, and crossing 90% cloud storage; the
-    `notifications` setting disables all of them. Clicking a failure
-    notification opens the panel (or starts the resync repair); Omarchy's
-    popups invoke the libnotify "default" action on click.
-18. Resync repair opens `onedrive --sync --resync` in a terminal and the CLI
-    prompts for Y/N confirmation before touching anything.
-19. While a sync runs, the hero and tooltip name the file currently uploading
-    or downloading. Reconciliation passes identify cloud fetch, item
-    processing, local database validation, local upload scanning, and final
-    true-up phases, falling back to plain "Syncing…" only for unknown stages.
-    Uploads the client starts on its own after noticing a local change —
-    outside a sync pass — show the same live file name and progress, count as
-    syncing for the bar badge, refresh the synced-ago meta on completion, and
-    an abandoned progress line older than ten minutes does not pin the
-    syncing state.
-20. The Web chip, compact web row, `W` key, and `web` IPC target all open
-    OneDrive on the web.
-21. Benign client fallbacks (WebSocket monitoring unavailable, notSupported
-    subscription errors, notification-daemon failures) appear in neither the
-    activity feed nor lastError, multi-line CLI error blocks fold their
-    detail lines into one row, and a later successful sync demotes a
-    transient network error or upload integrity failure to a neutral
-    recovered event with a state-specific title. Live connection retries say
-    so instead of retaining a stale reconciliation stage, and the
-    interruption status outranks a frozen transfer percentage.
-22. Cloud-check failure lines show the age of the failed attempt.
-23. Opening the panel retries a failed storage check once when the failure is
-    older than five minutes; a fresh failure is not retried, and Verify sync
-    is never retried automatically.
+1. CLI missing → missing-client badge and install message.
+2. Token missing → login badge; the action opens a terminal.
+3. Service stopped → paused badge and resume control; disabled, failed,
+   exit-126 and expired-authorization show attention instead.
+4. Service running → monitoring dot or syncing badge, pause control.
+5. Timed pauses (15 min, 1 h, 4 h) stop the service, show the remaining
+   time and resume on schedule; another preset replaces the timer; **Resume
+   syncing now** cancels it; the timer survives a shell restart; a
+   scheduling failure restores syncing.
+6. Two-way, download-only and upload-only modes in the hero and tooltip.
+7. **Refresh storage** queries quota only, with a spinner; **Verify sync** is
+   labelled optional and slow. Cutting the network during either keeps its
+   last good value and does not mark the service unhealthy.
+8. Full layout: storage, activity timeline, folder/cloud chips, clickable
+   file rows. Compact: storage and actions only.
+9. Arrow keys and Enter reach every control in visual order; long lists
+   scroll to the selection.
+10. Clean shell restart with no QML errors; a service still starting is
+    caught by the startup refresh ramp.
+11. Horizontal and vertical bars; a light and a dark theme; every bar badge
+    distinct.
+12. Notifications fire once per edge (failure, resync, reauthentication,
+    recovery, 90% storage) and the `notifications` setting silences them;
+    clicking a failure notification opens the panel or starts the repair.
+13. Resync repair opens `onedrive --sync --resync` in a terminal, which asks
+    for confirmation first.
+14. During a sync the hero names the transferring file and phase; uploads
+    the client starts on its own show the same; a progress line older than
+    ten minutes does not pin the syncing state; interruptions show as
+    retrying, not a frozen percentage.
+15. Web chip, `W` key and `web` IPC open OneDrive on the web.
+16. Benign client fallbacks never reach the feed; multi-line errors fold into
+    one row; errors resolved by a later sync show as recovered.
+17. A failed storage check older than five minutes is retried once on open;
+    Verify sync never is.
 
-Real Microsoft authentication should use a disposable test account. The
-2026-08-15 VM run additionally qualified interactive OAuth, real quota and
-pending-status responses, initial download, hash-verified upload/download,
-monitor upload, scoped remote deletion and reconciliation, pause/resume, and
-enabled-service recovery after reboot. See
-[the VM test report](docs/VM-TEST-REPORT.md) for its isolation and remaining
-qualification boundaries.
+Use a disposable Microsoft account for live tests.
+
+## Cleanup
+
+```bash
+omarchy plugin disable io.github.salemsayed.omaonedrive
+omarchy plugin remove io.github.salemsayed.omaonedrive
+rm -r -- "$HOME/.local/state/omarchy/io.github.salemsayed.omaonedrive"   # optional
+```
