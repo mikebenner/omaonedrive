@@ -118,6 +118,33 @@ Item {
     return Math.max(minimum, Math.min(maximum, value))
   }
 
+  // Drop everything derived from a previous config directory, keeping identity
+  // and in-flight processes. The next poll repopulates it.
+  function forgetSample() {
+    initialized = false
+    files = []
+    activity = []
+    quotaKnown = false
+    usedBytes = 0
+    quotaBytes = 0
+    quotaCheckedTs = 0
+    quotaError = ""
+    remoteStatus = "Not checked"
+    syncStatusCheckedTs = 0
+    syncStatusError = ""
+    remoteCheckedTs = 0
+    remoteError = ""
+    lastError = ""
+    lastSyncTs = 0
+    // Edge latches too: a condition that was true for the old directory must be
+    // able to notify again for the new one.
+    authenticated = false
+    serviceFailed = false
+    resyncRequired = false
+    reauthRequired = false
+    accountStateChanged()
+  }
+
   function refresh(remote) {
     if (remote === true) {
       checkQuota()

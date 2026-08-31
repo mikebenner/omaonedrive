@@ -119,6 +119,20 @@ test("the plain account sends exactly today's command", () => {
     ["python3", "/p/h.py", "--confdir", PLAIN.confdir, "--limit", "20"])
 })
 
+test("a non-default account with no confdir is not polled at all", () => {
+  // The helper independently re-derives the confdir in this case, so this is
+  // belt-and-braces -- but depending on that means the widget would silently
+  // report the DEFAULT account's token, quota and files under this account's
+  // name if that guard were ever relaxed. An empty command means "show nothing".
+  assert.deepEqual(
+    Commands.status("/p/h.py", { service: "onedrive@x.service", instance: "x", confdir: "" }, 20),
+    [])
+  // The plain service is unaffected: its default IS the correct behaviour.
+  assert.deepEqual(
+    Commands.status("/p/h.py", { service: "onedrive.service", instance: "", confdir: "" }, 20),
+    ["python3", "/p/h.py", "--limit", "20"])
+})
+
 test("the status command is account-complete", () => {
   const command = Commands.status("/p/onedrive-status.py", DRAGONES, 20)
   assert.deepEqual(command, [

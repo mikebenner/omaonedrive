@@ -51,6 +51,12 @@ function status(helperPath, account, recentFileLimit, mode) {
     command.push("--service", service)
   }
   if (confdir !== "") command.push("--confdir", confdir)
+  // A non-default account with no confdir must not be polled at all. The helper
+  // independently re-derives the confdir in that case, so this is belt-and-
+  // braces -- but relying on that means the widget silently reports the DEFAULT
+  // account's token, quota and files under this account's name if the helper
+  // guard is ever relaxed. Refuse instead, and let the caller show nothing.
+  else if (service !== "" && service !== DEFAULT_SERVICE) return []
   var unit = instance === "" ? "" : resumeUnit(instance)
   if (unit !== "") command.push("--resume-unit", unit)
   command.push("--limit", String(recentFileLimit))

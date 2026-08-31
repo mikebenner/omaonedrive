@@ -97,7 +97,17 @@ Item {
 
     var plan = Model.reconcilePlan(current, rows)
     for (var update = 0; update < plan.updates.length; update++) {
-      descriptors.set(plan.updates[update].index, normalizeDescriptor(plan.updates[update].row))
+      var descriptor = normalizeDescriptor(plan.updates[update].row)
+      var existing = descriptors.get(plan.updates[update].index)
+      // A unit repointed at a different config directory is a different account
+      // behind the same name. Keeping the delegate preserves its processes, but
+      // its quota, file list, auth flag and notification edge history now belong
+      // to the previous directory and must not be shown as this one's.
+      if (existing.confdir !== descriptor.confdir) {
+        var account = accountForService(descriptor.service)
+        if (account) account.forgetSample()
+      }
+      descriptors.set(plan.updates[update].index, descriptor)
     }
     for (var append = 0; append < plan.appends.length; append++) {
       descriptors.append(normalizeDescriptor(plan.appends[append]))
