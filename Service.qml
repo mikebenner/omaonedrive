@@ -150,23 +150,12 @@ Item {
 
   function notify(urgency, summary, body) {
     if (!notificationsEnabled) return
-    Quickshell.execDetached([
-      "omarchy-notification-send", "--app-name", "OmaOneDrive", "--urgency", urgency,
-      summary, body
-    ])
+    Quickshell.execDetached(Model.notificationCommand(urgency, summary, body, ""))
   }
 
   function notifyWithAction(urgency, summary, body, behavior) {
     if (!notificationsEnabled) return
-    var actionCommand = Model.notificationActionCommand(behavior)
-    if (actionCommand === "") {
-      notify(urgency, summary, body)
-      return
-    }
-    Quickshell.execDetached([
-      "omarchy-notification-send", "--app-name", "OmaOneDrive", "--urgency", urgency,
-      "--exec", actionCommand, summary, body
-    ])
+    Quickshell.execDetached(Model.notificationCommand(urgency, summary, body, behavior))
   }
 
   function applyStatus(raw) {

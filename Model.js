@@ -16,13 +16,28 @@ var DOCUMENT_EXTENSIONS = {
 
 var IPC_TARGET = "io.github.salemsayed.omaonedrive"
 
-// Commands passed to omarchy-notification-send --exec are deliberately a
-// closed set. The helper persists this hint with the notification, so a click
-// keeps working after omarchy-shell or this bar widget reloads.
-function notificationActionCommand(behavior) {
-  if (behavior === "open") return "omarchy-shell " + IPC_TARGET + " open"
-  if (behavior === "repair") return "omarchy-shell " + IPC_TARGET + " resync"
-  return ""
+// Actions passed to omarchy-notification-send --exec are deliberately a closed
+// argv set. Omarchy 4.0.1 consumes every argument after --exec as the click
+// command, so the delimiter must follow the notification text and each command
+// word must remain a separate array element.
+function notificationActionArgv(behavior) {
+  if (behavior === "open") return ["omarchy-shell", IPC_TARGET, "open"]
+  if (behavior === "repair") return ["omarchy-shell", IPC_TARGET, "resync"]
+  return []
+}
+
+function notificationCommand(urgency, summary, body, behavior) {
+  var command = [
+    "omarchy-notification-send", "--app-name", "OmaOneDrive", "--urgency", urgency,
+    summary, body
+  ]
+  var actionArgv = notificationActionArgv(behavior)
+  if (actionArgv.length > 0) {
+    command.push("--exec")
+    for (var index = 0; index < actionArgv.length; index++)
+      command.push(actionArgv[index])
+  }
+  return command
 }
 
 function defaultStatus() {
@@ -236,6 +251,14 @@ function folderName(path) {
   return parts[parts.length - 1] || value
 }
 
+// Omarchy 4.0.1's shared bar tooltip and PanelHero labels use Text.AutoText.
+// Replace markup delimiters only at those inherited rendering boundaries so a
+// local filename from the OneDrive journal remains visible but cannot become
+// rich text.
+function inheritedPlainText(value) {
+  return String(value || "").replace(/</g, "‹").replace(/>/g, "›")
+}
+
 function tooltip(status, nowMs) {
   if (!status || status.installed !== true) return "OneDrive CLI is not installed"
   var parts = [String(status.statusText || "OneDrive")]
@@ -243,7 +266,7 @@ function tooltip(status, nowMs) {
     parts.push(String(status.syncMode))
   if (Number(status.lastSyncTs || 0) > 0)
     parts.push("last sync " + relativeTime(status.lastSyncTs, nowMs))
-  return parts.join(" · ")
+  return inheritedPlainText(parts.join(" · "))
 }
 
 function heroMeta(status) {
@@ -251,7 +274,7 @@ function heroMeta(status) {
   var parts = [String(status.statusText || "OneDrive")]
   if (status.authenticated === true && String(status.syncMode || "") !== "")
     parts.push(String(status.syncMode))
-  return parts.join(" · ")
+  return inheritedPlainText(parts.join(" · "))
 }
 
 function filePath(url) {
@@ -282,6 +305,7 @@ if (typeof module !== "undefined") {
     tooltip: tooltip,
     heroMeta: heroMeta,
     filePath: filePath,
-    notificationActionCommand: notificationActionCommand
+    notificationActionArgv: notificationActionArgv,
+    notificationCommand: notificationCommand
   }
 }

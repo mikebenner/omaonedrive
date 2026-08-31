@@ -111,17 +111,49 @@ test("folder, tooltip, and plugin paths handle spaces", () => {
     statusText: "Monitoring",
     syncMode: "Upload only"
   }), "Monitoring · Upload only")
+  const markupStatus = {
+    installed: true,
+    authenticated: true,
+    statusText: "Uploading <b>quarterly report</b>.pdf",
+    syncMode: "Two-way",
+    lastSyncTs: 0
+  }
+  assert.equal(
+    Model.tooltip(markupStatus),
+    "Uploading ‹b›quarterly report‹/b›.pdf · Two-way"
+  )
+  assert.equal(
+    Model.heroMeta(markupStatus),
+    "Uploading ‹b›quarterly report‹/b›.pdf · Two-way"
+  )
+  assert.doesNotMatch(Model.tooltip(markupStatus), /[<>]/)
   assert.equal(Model.filePath("file:///tmp/Oma%20OneDrive/status.py"), "/tmp/Oma OneDrive/status.py")
 })
 
-test("notification click actions use a closed set of durable IPC commands", () => {
-  assert.equal(
-    Model.notificationActionCommand("open"),
-    "omarchy-shell io.github.salemsayed.omaonedrive open"
+test("notification click actions follow Omarchy 4.0.1's safe argv contract", () => {
+  assert.deepEqual(
+    Model.notificationActionArgv("open"),
+    ["omarchy-shell", "io.github.salemsayed.omaonedrive", "open"]
   )
-  assert.equal(
-    Model.notificationActionCommand("repair"),
-    "omarchy-shell io.github.salemsayed.omaonedrive resync"
+  assert.deepEqual(
+    Model.notificationActionArgv("repair"),
+    ["omarchy-shell", "io.github.salemsayed.omaonedrive", "resync"]
   )
-  assert.equal(Model.notificationActionCommand("arbitrary user input"), "")
+  assert.deepEqual(Model.notificationActionArgv("arbitrary user input"), [])
+
+  assert.deepEqual(
+    Model.notificationCommand("critical", "OneDrive failed", "Open the panel.", "open"),
+    [
+      "omarchy-notification-send", "--app-name", "OmaOneDrive", "--urgency", "critical",
+      "OneDrive failed", "Open the panel.", "--exec",
+      "omarchy-shell", "io.github.salemsayed.omaonedrive", "open"
+    ]
+  )
+  assert.deepEqual(
+    Model.notificationCommand("normal", "OneDrive recovered", "Sync is healthy.", ""),
+    [
+      "omarchy-notification-send", "--app-name", "OmaOneDrive", "--urgency", "normal",
+      "OneDrive recovered", "Sync is healthy."
+    ]
+  )
 })

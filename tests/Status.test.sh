@@ -268,8 +268,8 @@ spec = importlib.util.spec_from_file_location("omaonedrive_status", sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 exit_code, output = module.command_output(
-  [sys.executable, "-c", "import time; print('partial', flush=True); time.sleep(1)"],
-  timeout=0.05,
+  ["bash", "-c", "printf 'partial\\n'; sleep 5"],
+  timeout=1.0,
 )
 assert exit_code == 124
 assert output == "partial"
@@ -345,8 +345,9 @@ grep -Fq '["systemctl", "--user", "start", "onedrive.service"]' "$root/Service.q
 grep -Fq '["omarchy-launch-terminal", "onedrive"]' "$root/Service.qml"
 grep -Fq '["omarchy-launch-terminal", "onedrive", "--reauth"]' "$root/Service.qml"
 grep -Fq '["omarchy-launch-terminal", "onedrive", "--sync", "--resync"]' "$root/Service.qml"
-grep -Fq '"omarchy-notification-send"' "$root/Service.qml"
-grep -Fq '"--exec", actionCommand' "$root/Service.qml"
+grep -Fq 'Model.notificationCommand(urgency, summary, body, behavior)' "$root/Service.qml"
+grep -Fq 'command.push("--exec")' "$root/Model.js"
+grep -Fq 'return ["omarchy-shell", IPC_TARGET, "open"]' "$root/Model.js"
 if grep -Fq '"notify-send"' "$root/Service.qml"; then
   echo "service still calls notify-send directly" >&2
   exit 1
