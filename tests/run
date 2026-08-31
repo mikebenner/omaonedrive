@@ -27,4 +27,8 @@ fi
 python3 "$root/tests/Journal.test.py"
 "$root/tests/Status.test.sh"
 
+# Integration: the argv the QML builds, run against the real helper on this
+# machine. Skips where qml6 or real accounts are absent.
+"$root/tests/contract.sh"
+
 echo "All OmaOneDrive tests passed"
