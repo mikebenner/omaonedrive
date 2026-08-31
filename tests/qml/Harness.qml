@@ -221,7 +221,130 @@ Item {
           "...so the scheduler keeps polling the other accounts")
       }
 
-      else if (s >= 12) {
+      else if (s === 12) {
+        console.log("notification broker")
+        Quickshell.detached = []
+        harness.notifyBefore = Quickshell.spawnCount
+        // Three accounts report attention across a poll round. The broker must
+        // coalesce them into ONE popup, not one per account -- the defect that
+        // survived two rounds because the burst window meant "900ms of quiet",
+        // which a staggered scheduler never produces.
+        for (var n = 0; n < svc.accounts.length; n++) {
+          svc.accounts[n].refresh(false)
+        }
+        for (var m = 0; m < svc.accounts.length; m++) {
+          harness.finishStatus(svc.accounts[m].service,
+            harness.statusPayload({ reauthRequired: true, statusText: "Reauthentication required" }))
+        }
+      }
+
+      else if (s === 13) {
+        // Nothing may have fired yet: the window spans a poll round.
+        var early = Quickshell.detached.length + Quickshell.runningWith("notify-send").length
+        harness.check(early === 0, "no notification fires before the burst window closes")
+        harness.burstStart = Date.now()
+      }
+
+      else if (s === 14) {
+        var fired = Quickshell.detached.length + Quickshell.runningWith("notify-send").length
+        harness.check(fired <= 1,
+          "three accounts failing in one round produce at most ONE notification")
+        harness.notified = fired
+      }
+
+      else if (s === 15) {
+        console.log("per-account pause targets only its own units")
+        Quickshell.detached = []
+        // Step 12 left every account reauth-required, and pauseFor correctly
+        // refuses an account in that state. Return them to healthy first, or
+        // this would test the guard rather than the targeting.
+        for (var h = 0; h < svc.accounts.length; h++) {
+          svc.accounts[h].refresh(false)
+        }
+        for (var f = 0; f < svc.accounts.length; f++) {
+          harness.finishStatus(svc.accounts[f].service, harness.statusPayload({}))
+        }
+        var target = svc.accounts[1]
+        harness.check(target.reauthRequired === false && target.busy === false,
+          "target account is healthy and idle before the pause")
+        target.pauseFor(15)
+        // The cancel runs first; find it and check it names only this account.
+        var cancels = Quickshell.runningWith("stop")
+        var named = false
+        for (var c = 0; c < cancels.length; c++) {
+          var joined = (cancels[c].command || []).join(" ")
+          if (joined.indexOf("omaonedrive-resume@b") !== -1
+              && joined.indexOf("omaonedrive-resume@a") === -1
+              && joined.indexOf("omaonedrive-resume.timer") === -1) named = true
+        }
+        harness.check(named, "a timed pause cancels only that account's own resume unit")
+        for (var k = 0; k < cancels.length; k++) cancels[k].finish(0, "")
+      }
+
+      else if (s === 16) {
+        // After the cancel, the stop for that account's own service.
+        var stops = Quickshell.runningWith("onedrive@b.service")
+        harness.check(stops.length >= 1, "the pause stops that account's own service")
+        var wrong = Quickshell.runningWith("onedrive@a.service").length
+          + Quickshell.runningWith("onedrive.service").length
+        harness.check(wrong === 0, "...and no other account's service is touched")
+        var live = Quickshell.running()
+        for (var w = 0; w < live.length; w++) live[w].finish(0, "")
+      }
+
+      else if (s === 17) {
+        console.log("a repointed confdir forgets the previous account's sample")
+        var acct = svc.accounts[2]
+        // Deliberately NOT assigning acct.confdir here: a direct assignment
+        // destroys the binding to the model role, so the descriptor update could
+        // never reach it and the test would fail for a reason of its own making.
+        harness.check(acct.initialized === true, "account is initialised before the repoint")
+        harness.check(acct.confdir === "/c/c", "starts on its discovered confdir")
+        svc.applyDiscovery([
+          { service: "onedrive@a.service", instance: "a", confdir: "/c/a", description: "A" },
+          { service: "onedrive@b.service", instance: "b", confdir: "/c/b", description: "B" },
+          { service: "onedrive@c.service", instance: "c", confdir: "/NEW/c", description: "C" }
+        ])
+        harness.check(acct.confdir === "/NEW/c", "the descriptor update reaches the account")
+        harness.check(acct.initialized === false,
+          "a repointed account forgets its sample")
+        harness.check(acct.syncDir === "",
+          "...including syncDir, so Open folder cannot open the PREVIOUS directory")
+      }
+
+      else if (s === 18) {
+        console.log("a continuous stream of events must still flush")
+        // The discriminating case. With burstTimer.restart() on every enqueue,
+        // the window means "N ms of QUIET" -- so a stream of events arriving
+        // closer together than the window never flushes at all, and the user is
+        // told nothing. With start(), the window runs from the first event and
+        // fires regardless. Reduce to ONE account so the window is 900ms and a
+        // 60ms tick loop can outrun it.
+        svc.applyDiscovery([
+          { service: "onedrive@a.service", instance: "a", confdir: "/c/a", description: "A" }
+        ])
+        Quickshell.detached = []
+        harness.streamTicks = 0
+      }
+
+      else if (s >= 19 && s <= 40) {
+        // One event per tick, faster than the 900ms window.
+        svc.enqueueTransition({
+          service: "onedrive@a.service", name: "A", kind: "reauth",
+          summary: "OneDrive needs reauthentication", short: "Reauthentication required",
+          body: "b", action: "open", actionLabel: "Open OneDrive panel"
+        })
+        harness.streamTicks += 1
+      }
+
+      else if (s === 41) {
+        var fired = Quickshell.detached.length + Quickshell.runningWith("notify-send").length
+        harness.check(fired >= 1,
+          "a stream of events flushes rather than being deferred forever (" +
+          harness.streamTicks + " events over ~" + (harness.streamTicks * 60) + "ms)")
+      }
+
+      else if (s >= 42) {
         console.log(harness.failures === 0
           ? "QML harness: all checks passed"
           : "QML harness: " + harness.failures + " FAILED")
@@ -232,4 +355,8 @@ Item {
 
   property string polled: ""
   property string second: ""
+  property int notifyBefore: 0
+  property int notified: 0
+  property double burstStart: 0
+  property int streamTicks: 0
 }
