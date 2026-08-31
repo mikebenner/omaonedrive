@@ -82,8 +82,14 @@ for argument in "$@"; do
 done
 case " $* " in
   *" list-timers "*)
-    if [[ -n ${FAKE_RESUME_AT:-} ]]; then
-      printf '[{"next":%s,"unit":"omaonedrive-resume.timer"}]\n' "$((FAKE_RESUME_AT * 1000000))"
+    # Only the unit actually asked for reports a pending resume, so an account
+    # cannot inherit another account's timer.
+    timer=""
+    for argument in "$@"; do
+      case "$argument" in *.timer) timer="$argument" ;; esac
+    done
+    if [[ -n ${FAKE_RESUME_AT:-} && $timer == "${FAKE_RESUME_TIMER:-omaonedrive-resume.timer}" ]]; then
+      printf '[{"next":%s,"unit":"%s"}]\n' "$((FAKE_RESUME_AT * 1000000))" "$timer"
     else
       echo '[]'
     fi
@@ -792,6 +798,51 @@ XDG_STATE_HOME="$isolated_state" FAKE_UNITS="$units" python3 "$root/onedrive-sta
   --service onedrive@work.service --confdir "$alt_confdir" --limit 5 >/dev/null
 [[ $(stat -c '%a' "$isolated_state/omarchy/io.github.salemsayed.omaonedrive") == 700 ]]
 [[ $(stat -c '%a' "$isolated_state/omarchy/io.github.salemsayed.omaonedrive/accounts") == 700 ]]
+
+# --- --resume-unit reads that account's own timer ----------------------------
+
+resume_at=$(($(date +%s) + 3600))
+# An authenticated second account, so the paused status text is actually
+# reachable -- an unauthenticated one short-circuits to "Login required".
+paused_confdir="$test_home/.config/onedrive-accounts/paused"
+paused_sync_dir="$test_home/Paused OneDrive"
+mkdir -p "$paused_confdir" "$paused_sync_dir"
+printf 'sync_dir = "%s"\n' "$paused_sync_dir" >"$paused_confdir/config"
+touch "$paused_confdir/refresh_token"
+
+# The tandera account's timer is pending...
+FAKE_ACTIVE=inactive FAKE_RESUME_AT="$resume_at" FAKE_RESUME_TIMER="omaonedrive-resume@tandera.timer" \
+  python3 "$root/onedrive-status.py" --service onedrive@tandera.service --confdir "$paused_confdir" \
+  --resume-unit omaonedrive-resume@tandera --limit 5 >"$test_root/resume-tandera.json"
+jq -e --argjson resume_at "$resume_at" '
+  .authenticated == true
+  and .resumeAt == $resume_at
+  and (.statusText | startswith("Paused · resumes in"))
+' "$test_root/resume-tandera.json" >/dev/null
+
+# ...and on the same machine state a different account must NOT inherit it.
+FAKE_ACTIVE=inactive FAKE_RESUME_AT="$resume_at" FAKE_RESUME_TIMER="omaonedrive-resume@tandera.timer" \
+  python3 "$root/onedrive-status.py" --service onedrive@personal.service --confdir "$paused_confdir" \
+  --resume-unit omaonedrive-resume@personal --limit 5 >"$test_root/resume-personal.json"
+jq -e '
+  .authenticated == true
+  and .resumeAt == 0
+  and (.statusText | startswith("Paused · resumes in") | not)
+' "$test_root/resume-personal.json" >/dev/null
+
+# The plain account keeps the legacy unit name, so an in-flight timer survives
+# an upgrade.
+FAKE_ACTIVE=inactive FAKE_RESUME_AT="$resume_at" python3 "$root/onedrive-status.py" \
+  --resume-unit omaonedrive-resume --limit 5 >"$test_root/resume-legacy.json"
+jq -e --argjson resume_at "$resume_at" '.resumeAt == $resume_at' "$test_root/resume-legacy.json" >/dev/null
+
+# The value becomes a systemd unit name, so it is validated like a service name.
+for bad_unit in 'bad/unit' 'unit with space' '../escape'; do
+  if python3 "$root/onedrive-status.py" --resume-unit "$bad_unit" >/dev/null 2>&1; then
+    echo "invalid resume unit unexpectedly passed: $bad_unit" >&2
+    exit 1
+  fi
+done
 
 # --- the resume timer is not cross-account -----------------------------------
 

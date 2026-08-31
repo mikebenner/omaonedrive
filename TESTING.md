@@ -16,6 +16,16 @@ timer, journal, authentication state, local files, quota, sync status, cache
 reuse and state permissions — including that a routine refresh never runs a
 cloud query and that quota and sync-status failures never clear each other.
 
+It also covers multi-account behaviour against a fake `systemctl`: that
+`--list-accounts` finds every account from its own unit's `ExecStart` (ignoring
+the bare template, stale `not-found` symlinks and masked units, and never
+guessing a confdir from an instance name), that `--confdir` selects an account
+and gives it its own cache *and* lock, that the confdir reaches the client as
+exactly one argument and cannot introduce a second flag, that the helper never
+creates a config directory it was only asked to read, that `--resume-unit` reads
+that account's own timer and no other's, and that the no-flag JSON output keeps
+exactly the field set the QML layer reads.
+
 ## In the shell
 
 Use an Omarchy Quattro VM with no host block device attached:

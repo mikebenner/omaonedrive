@@ -17,7 +17,7 @@ from pathlib import Path
 
 PLUGIN_ID = "io.github.salemsayed.omaonedrive"
 DEFAULT_SERVICE = "onedrive.service"
-RESUME_TIMER = "omaonedrive-resume.timer"
+DEFAULT_RESUME_UNIT = "omaonedrive-resume"
 SCAN_CACHE_SECONDS = 120
 MAX_SERVICE_EVENTS = 2
 MAX_FILE_EVENTS = 5
@@ -254,10 +254,10 @@ def service_state(service):
   }
 
 
-def resume_timer_state():
+def resume_timer_state(unit=DEFAULT_RESUME_UNIT):
   exit_code, output = systemctl_value([
     "list-timers",
-    RESUME_TIMER,
+    unit + ".timer",
     "--all",
     "--output=json",
     "--no-pager",
@@ -283,6 +283,9 @@ def resume_timer_state():
 # systemd-escape produces them (e.g. "onedrive@team\x20space.service"); "/" is
 # not, so "../bad.service" is still refused.
 SERVICE_NAME_PATTERN = re.compile(r"[A-Za-z0-9_.@:\\-]+\.service")
+
+# A resume unit name, without the .timer/.service suffix the caller never passes.
+RESUME_UNIT_PATTERN = re.compile(r"[A-Za-z0-9_.@:\\-]+")
 
 # "onedrive.service" or "onedrive@<instance>.service"; the bare template
 # "onedrive@.service" deliberately does not match — it is not an account.
@@ -895,16 +898,23 @@ def build_status(args):
   sync_dir = config["syncDir"]
   authenticated = confdir is not None and (confdir / "refresh_token").is_file()
   service = service_state(args.service)
-  # RESUME_TIMER is one fixed unit that starts onedrive.service, so it says
-  # nothing about any other account; reading it for them reported "Paused ·
-  # resumes in ..." for accounts that were never paused. Per-account resume needs
-  # a --resume-unit option, which is not in this change's scope.
+  # Each account schedules its own transient resume unit, so the caller says
+  # which one to read. Without it, the default name refers to the unit that
+  # starts onedrive.service and says nothing about any other account -- reading
+  # it for them reported "Paused · resumes in ..." for accounts never paused --
+  # so an unnamed non-default account reports no resume time rather than a
+  # borrowed one.
   is_default_account = (
     args.service == DEFAULT_SERVICE
     and confdir is not None
     and confdir == canonical_confdir(default_confdir())
   )
-  resume_at = resume_timer_state() if is_default_account else 0
+  if args.resume_unit:
+    resume_at = resume_timer_state(args.resume_unit)
+  elif is_default_account:
+    resume_at = resume_timer_state()
+  else:
+    resume_at = 0
   journal = journal_state(args.service) if service["serviceAvailable"] else {
     "syncing": False,
     "lastSyncTs": 0,
@@ -1042,6 +1052,11 @@ def main():
   parser.add_argument("--service", default=DEFAULT_SERVICE, help="systemd user service name")
   parser.add_argument("--confdir", default=None, help="OneDrive config directory for this account")
   parser.add_argument(
+    "--resume-unit",
+    default=None,
+    help="transient resume unit for this account (default: " + DEFAULT_RESUME_UNIT + ")",
+  )
+  parser.add_argument(
     "--list-accounts",
     action="store_true",
     help="print the accounts configured on this machine as JSON and exit",
@@ -1055,6 +1070,8 @@ def main():
     parser.error("invalid service name")
   if args.confdir is not None and not valid_confdir(args.confdir):
     parser.error("invalid confdir")
+  if args.resume_unit is not None and not RESUME_UNIT_PATTERN.fullmatch(args.resume_unit):
+    parser.error("invalid resume unit")
   print(json.dumps(build_status(args), separators=(",", ":")))
 
 
