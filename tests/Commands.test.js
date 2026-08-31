@@ -133,6 +133,29 @@ test("a non-default account with no confdir is not polled at all", () => {
     ["python3", "/p/h.py", "--limit", "20"])
 })
 
+test("an empty status command is a refusal the caller must handle", () => {
+  // This shape bricked the widget once: startStatusProcess assigned the empty
+  // vector to a Process and set running = true. An empty command never launches,
+  // so onExited never fired, `refreshing` stayed true forever, and the
+  // coordinator's one-poll-at-a-time gate then froze EVERY account permanently.
+  // Account.startStatusProcess must bail before touching any state.
+  const refused = Commands.status("/p/h.py",
+    { service: "onedrive@x.service", instance: "x", confdir: "" }, 20)
+  assert.deepEqual(refused, [])
+  assert.equal(refused.length, 0)
+
+  const source = fs.readFileSync(path.join(root, "Account.qml"), "utf8")
+  const fn = source.slice(source.indexOf("function startStatusProcess"))
+  const body = fn.slice(0, fn.indexOf("\n  }"))
+  // The guard must come before `refreshing = true`, or the state is already
+  // corrupted by the time we return.
+  const guard = body.indexOf("command.length === 0")
+  const setsRefreshing = body.indexOf("refreshing = true")
+  assert.ok(guard !== -1, "startStatusProcess has no empty-command guard")
+  assert.ok(guard < setsRefreshing,
+    "the empty-command guard must precede `refreshing = true`")
+})
+
 test("the status command is account-complete", () => {
   const command = Commands.status("/p/onedrive-status.py", DRAGONES, 20)
   assert.deepEqual(command, [

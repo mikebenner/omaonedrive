@@ -52,6 +52,10 @@ Item {
   // one-at-a-time slot. A 30s cloud check must not freeze every account's
   // routine polling.
   readonly property bool routinePolling: refreshing && _activeCloudMode === ""
+  // Any status process at all -- routine or cloud. An account in this state
+  // cannot accept a poll slot, so the scheduler must skip it rather than
+  // spending a tick on a refresh() that returns immediately.
+  readonly property bool statusBusy: statusProcess.running
   property string statusText: "Checking…"
   property string syncDir: ""
   property string syncMode: "Two-way"
@@ -122,6 +126,21 @@ Item {
   // and in-flight processes. The next poll repopulates it.
   function forgetSample() {
     initialized = false
+    // The displayed fields too: leaving these meant the panel showed the old
+    // account's status and "Open folder" opened the PREVIOUS account's sync
+    // directory -- the exact leak this function exists to prevent.
+    syncDir = ""
+    statusText = "Checking…"
+    syncStage = ""
+    syncMode = "Two-way"
+    clientVersion = ""
+    activeState = ""
+    installed = false
+    running = false
+    enabled = false
+    syncing = false
+    serviceAvailable = false
+    resumeAt = 0
     files = []
     activity = []
     quotaKnown = false
@@ -203,11 +222,22 @@ Item {
   }
 
   function startStatusProcess(cloudMode) {
+    var command = Commands.status(helperPath, root, recentFileLimit, cloudMode)
+    if (command.length === 0) {
+      // This account cannot be described (a non-default service with no known
+      // config directory). Starting a Process on an empty command would never
+      // exit, so `refreshing` would stay true forever and the coordinator's
+      // one-poll-at-a-time gate would freeze EVERY account permanently.
+      attempted = true
+      lastError = "This account's configuration directory is unknown"
+      accountStateChanged()
+      pollFinished(root.service)
+      return
+    }
     _activeCloudMode = cloudMode
     _statusOutput = ""
     _statusError = ""
     refreshing = true
-    var command = Commands.status(helperPath, root, recentFileLimit, cloudMode)
     if (cloudMode !== "") {
       actionStatusTimer.stop()
       actionStatus = (cloudMode === "quota" ? "Refreshing storage" : "Verifying sync")
@@ -217,7 +247,6 @@ Item {
     statusProcess.running = true
   }
 
-  signal openPanelRequested(string service)
   signal pollFinished(string service)
   signal transition(var event)
   // NOT named stateChanged: QQuickItem already has that as the NOTIFY signal for

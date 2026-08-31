@@ -518,7 +518,12 @@ function composeNotification(events, multiAccount) {
     return {
       urgency: "normal",
       summary: storage.length + " OneDrive accounts are almost full",
-      body: storage.map(function (event) { return event.name + ": " + event.short }).join("\n"),
+      // Recoveries are carried here too. The single-storage branch above already
+      // does this; omitting it here dropped an edge-latched recovery, which then
+      // never re-reports.
+      body: storage.concat(recovered).map(function (event) {
+        return event.name + ": " + event.short
+      }).join("\n"),
       action: "",
       actionLabel: "",
       service: storage[0].service
@@ -534,14 +539,20 @@ function composeNotification(events, multiAccount) {
       service: recovered[0].service
     }
   }
-  return {
-    urgency: "normal",
-    summary: recovered.length + " OneDrive accounts recovered",
-    body: recovered.map(function (event) { return event.name + ": " + event.short }).join("\n"),
-    action: "",
-    actionLabel: "",
-    service: recovered[0].service
+  if (recovered.length > 1) {
+    return {
+      urgency: "normal",
+      summary: recovered.length + " OneDrive accounts recovered",
+      body: recovered.map(function (event) { return event.name + ": " + event.short }).join("\n"),
+      action: "",
+      actionLabel: "",
+      service: recovered[0].service
+    }
   }
+  // No branch matched: an event kind this function does not know about. Say
+  // nothing rather than throwing -- flushTransitions has already cleared the
+  // pending list, so an exception here would lose the whole burst silently.
+  return null
 }
 
 // The glyph for a badge kind. Shared so the bar badge and the account selector
@@ -574,7 +585,9 @@ function nextPollIndex(accounts, cursor) {
     for (var step = 0; step < list.length; step++) {
       var index = (start + step) % list.length
       var account = list[index]
-      if (!account || account.routinePolling === true) continue
+      // `busy` covers a cloud check too: such an account will refuse the slot,
+      // so handing it one wastes the tick entirely.
+      if (!account || account.routinePolling === true || account.busy === true) continue
       if (pass === 0 && account.initialized === true) continue
       return index
     }

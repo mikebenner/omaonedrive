@@ -51,7 +51,6 @@ Item {
     return value === true || String(value).toLowerCase() === "true"
   }
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 30, 10, 3600)
-  readonly property int recentFileLimit: intSetting("recentFileLimit", 20, 5, 50)
   readonly property string helperPath: Model.filePath(Qt.resolvedUrl("onedrive-status.py"))
 
   property string discoveryError: ""
@@ -103,7 +102,11 @@ Item {
       // behind the same name. Keeping the delegate preserves its processes, but
       // its quota, file list, auth flag and notification edge history now belong
       // to the previous directory and must not be shown as this one's.
-      if (existing.confdir !== descriptor.confdir) {
+      // Only a real repoint: "" means "not yet known", and the seeded descriptor
+      // always starts that way, so treating it as a change wiped the first
+      // sample and the edge latches on every startup.
+      if (existing.confdir !== "" && descriptor.confdir !== ""
+          && existing.confdir !== descriptor.confdir) {
         var account = accountForService(descriptor.service)
         if (account) account.forgetSample()
       }
@@ -178,13 +181,27 @@ Item {
     return false
   }
 
+  // Shape Model.nextPollIndex expects: it must skip an account whose status
+  // process is busy for ANY reason, not only a routine poll.
+  function pollCandidates() {
+    var rows = []
+    for (var index = 0; index < _accountObjects.length; index++) {
+      rows.push({
+        routinePolling: _accountObjects[index].routinePolling,
+        busy: _accountObjects[index].statusBusy,
+        initialized: _accountObjects[index].initialized
+      })
+    }
+    return rows
+  }
+
   // An account that has not reported yet takes priority, but the cursor still
   // advances, so several unreported accounts interleave instead of the first one
   // taking every slot until it gives up. Priority is "has not reported"
   // (!initialized), not "not running": a deliberately paused account is a known
   // state and must not consume startup slots at all.
   function nextAccountToPoll() {
-    var index = Model.nextPollIndex(_accountObjects, _pollCursor)
+    var index = Model.nextPollIndex(pollCandidates(), _pollCursor)
     if (index < 0) return null
     _pollCursor = (index + 1) % _accountObjects.length
     return _accountObjects[index]
@@ -263,6 +280,10 @@ Item {
     var events = _pendingEvents
     _pendingEvents = []
     if (events.length === 0) return
+    // Checked at SEND time, not only at enqueue: the burst window is up to a
+    // full refresh interval and the startup hold longer still, so a user who
+    // turns notifications off inside that window would otherwise still get one.
+    if (!notificationsEnabled) return
     var composed = Model.composeNotification(events, accountCount > 1)
     if (!composed) return
     _baselineSent = true
@@ -344,10 +365,16 @@ Item {
   readonly property bool cloudChecking: selectedAccount ? selectedAccount.cloudChecking : false
   readonly property bool quotaChecking: selectedAccount ? selectedAccount.quotaChecking : false
   readonly property bool fullStatusChecking: selectedAccount ? selectedAccount.fullStatusChecking : false
-  readonly property int cloudTimeoutSec: 30
-  readonly property int cloudRetryAfterSec: 300
+  // Forwarded from the selected account, which carries the comment tying it to
+  // the helper's own timeout constants. A second literal here would drift.
+  readonly property int cloudTimeoutSec: selectedAccount ? selectedAccount.cloudTimeoutSec : 30
 
   function refresh(remote) { if (selectedAccount) selectedAccount.refresh(remote) }
+  // Same slot discipline as selectAccount: opening the panel while the scheduler
+  // is mid-poll on another account would otherwise start a second helper.
+  function refreshSelected() {
+    if (selectedAccount && !routinePollRunning()) selectedAccount.refresh(false)
+  }
   function checkQuota() { if (selectedAccount) selectedAccount.checkQuota() }
   function checkFullStatus() { if (selectedAccount) selectedAccount.checkFullStatus() }
   function retryStaleQuotaOnOpen() { if (selectedAccount) selectedAccount.retryStaleQuotaOnOpen() }
@@ -385,7 +412,6 @@ Item {
       settings: root.settings
       coordinator: root
       onAccountStateChanged: root._aggregateRevision++
-      onOpenPanelRequested: root.openPanelRequested()
       onPollFinished: root.cloudFinished()
       onTransition: function(event) { root.enqueueTransition(event) }
     }

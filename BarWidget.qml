@@ -26,16 +26,17 @@ BarWidget {
   // not dim a bar that is still syncing two others.
   readonly property bool active: aggregate.anyActive === true
   readonly property bool syncing: aggregate.kind === "syncing" || aggregate.kind === "starting"
-  readonly property bool installed: aggregate.kind !== "missing"
+  // Dimming asks "is anything actually usable", which is not the question the
+  // badge answers. Deriving it from the badge kind left the icon undimmed before
+  // the first poll, and undimmed while showing the missing-client badge for an
+  // account whose unit is merely unavailable.
+  readonly property bool installed: aggregate.initialized === true
+    && aggregate.kind !== "missing" && aggregate.kind !== "unavailable"
   readonly property color iconColor: active
     ? (bar ? bar.barForeground : Color.foreground)
     : Qt.darker(bar ? bar.barForeground : Color.foreground, 1.55)
   readonly property string badgeKind: Model.badgeKind(aggregate.kind)
-  readonly property string badgeGlyph: badgeKind === "missing" ? "󰅖"
-    : (badgeKind === "login" ? "󰌋"
-      : (badgeKind === "paused" ? "󰏤"
-        : (badgeKind === "syncing" ? "󰑓"
-          : (badgeKind === "attention" ? "󰀪" : ""))))
+  readonly property string badgeGlyph: Model.badgeGlyph(badgeKind)
   readonly property color badgeColor: badgeKind === "login" || badgeKind === "attention"
     ? (bar ? bar.urgent : Color.urgent)
     : (badgeKind === "syncing" ? Color.accent : iconColor)

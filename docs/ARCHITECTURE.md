@@ -123,9 +123,13 @@ name, its systemd description, and its config-directory path.
 
 The bar shows one state for all accounts: each is classified into exactly one of
 ten states and the worst wins, with the cloud icon lit while any account is
-still working. Until every discovered account has produced a first sample the
-aggregate is `checking` and no badge is drawn, so default values cannot flash a
-missing-client badge at startup. The tooltip is the account's own single line
+still working. An account that has not produced a first sample is excluded from the aggregate
+rather than gating it: excluding it already stops default values flashing a
+missing-client badge, while gating on all of them meant one permanently-failing
+account froze the bar at `checking` forever, hiding a healthy account's real
+state behind it. Only when nothing has reported is the aggregate `checking`,
+with no badge drawn. The tooltip applies the same rule, so badge and tooltip
+cannot disagree about which accounts are known. The tooltip is the account's own single line
 when there is one account, and an attributed worst-first list when there are
 several. `Model.js` holds the classification, aggregation, tooltip, badge and
 notification-composition rules as pure functions, table-tested in
