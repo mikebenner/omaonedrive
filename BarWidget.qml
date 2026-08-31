@@ -137,6 +137,36 @@ BarWidget {
       return "ok"
     }
     function status(): string { return root.service ? root.service.statusText : "Checking…" }
+    // Enumerate and select, so automation can reach a non-default account before
+    // invoking any of the controls above -- which all act on the selected one.
+    function accounts(): string {
+      if (!root.service) return "[]"
+      var rows = []
+      for (var index = 0; index < root.service.accounts.length; index++) {
+        var account = root.service.accounts[index]
+        rows.push({
+          service: account.service,
+          instance: account.instance,
+          name: account.displayName,
+          selected: account.service === root.service.selectedService,
+          status: account.statusText
+        })
+      }
+      return JSON.stringify(rows)
+    }
+    function selectAccount(target: string): string {
+      if (!root.service) return "no accounts"
+      // Accept either the full unit name or the bare instance, because a script
+      // author will reach for "personal" before "onedrive@personal.service".
+      for (var index = 0; index < root.service.accounts.length; index++) {
+        var account = root.service.accounts[index]
+        if (account.service === target || (account.instance !== "" && account.instance === target)) {
+          root.service.selectAccount(account.service)
+          return "ok"
+        }
+      }
+      return "unknown account: " + target
+    }
   }
 
   BarIconButton {

@@ -209,7 +209,10 @@ Item {
 
   function cloudBusyAccount() {
     for (var index = 0; index < _accountObjects.length; index++) {
-      if (_accountObjects[index].cloudChecking) return _accountObjects[index]
+      var account = _accountObjects[index]
+      // Pending counts as busy: a check deferred behind that account's routine
+      // poll has already claimed the slot.
+      if (account.cloudChecking || account.cloudPending) return account
     }
     return null
   }

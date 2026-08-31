@@ -16,17 +16,26 @@ and `tests/Commands.test.js` asserts the exact arrays.
 `Service.qml` discovers accounts with the helper's `--list-accounts`, reconciles
 the result by the stable service key so existing delegates and their
 notification history survive, dispatches one local poll per scheduler slot
-(`refreshIntervalSec` divided by the account count, so the total poll rate does
-not grow with the number of accounts), serialises explicit cloud checks behind a
-semaphore of one, and batches transition events into at most one desktop
-notification per polling burst. With no template instances, discovery yields the
+(`refreshIntervalSec` divided by the account count, so the steady-state poll rate
+does not grow with the number of accounts), serialises explicit cloud checks
+behind a semaphore of one -- a check deferred behind an account's own routine
+poll still holds that slot -- and batches transition events into at most one
+desktop notification per polling burst, whose window spans a full poll round so
+accounts that fail together are reported together. Until every account has been
+polled once, a separate two-second ramp polls faster, as the single-account
+widget always did; it is capped, so a helper that always fails cannot spin on it. With no template instances, discovery yields the
 plain `onedrive.service` and everything below behaves as it did when the widget
 was single-account.
 
 Timed pauses stop that account's service and schedule its own transient resume
 unit through `systemd-run --user` — `omaonedrive-resume` for the plain service,
 `omaonedrive-resume@<instance>` for a template instance, so an in-flight timer
-survives an upgrade and one account's pause never cancels another's. Replacing a
+survives an upgrade and one account's pause never cancels another's. A few
+instance names cannot yield a safe unit at all: one ending in `.timer` or
+`.service` would make `systemd-run` derive the same unit as a different account,
+and one long enough to overflow systemd's 255-byte limit cannot be scheduled. For
+those, a timed pause degrades to an untimed one and says so, rather than arming a
+timer that would collide. Replacing a
 preset or resuming immediately first cancels only that account's timer. If
 scheduling fails after the service was stopped, that same service is started
 again so a failed timer cannot leave sync paused unexpectedly.

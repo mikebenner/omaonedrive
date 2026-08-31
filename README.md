@@ -27,7 +27,8 @@ pause/resume — in a panel like Omarchy's own Dropbox widget.
 - **Multiple accounts** — every configured account is discovered from its own
   systemd unit, with a selector row in the panel, per-account pause, login and
   repair, and one bar badge showing whichever account most needs attention.
-  A single-account setup looks and behaves exactly as before.
+  A single-account setup keeps the same commands, cache and lock paths, tooltip,
+  panel layout and notification text.
 - **Notifications** when OneDrive fails, needs a resync or reauthentication,
   recovers, or storage passes 90% full. Clicking one opens the panel or
   starts the repair. Events from several accounts are grouped into one
@@ -59,8 +60,10 @@ never automatic) — plus one storage retry when you open the panel onto a
 failed check older than five minutes.
 
 With several accounts the refresh interval is shared rather than multiplied:
-each account is polled once per interval, staggered across it, and only one
-account is read at a time. Cloud checks stay manual and run one at a time.
+in steady state each account is polled once per interval, staggered across it,
+and only one account is read at a time. At startup a faster ramp runs until every
+account has reported once. Cloud checks stay manual and run one at a time across
+all accounts.
 
 Accounts are found by reading each `onedrive` systemd user unit's own
 `ExecStart` for its `--confdir`, so an instance pointed at an unrelated

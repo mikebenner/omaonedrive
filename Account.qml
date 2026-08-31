@@ -83,6 +83,10 @@ Item {
   readonly property bool busy: statusProcess.running || controlProcess.running
     || cancelTimerProcess.running || scheduleTimerProcess.running
   readonly property bool cloudChecking: _activeCloudMode !== "" && statusProcess.running
+  // A cloud check that is waiting for this account's routine poll to finish is
+  // already holding the shared slot, even though no process is running for it
+  // yet. Without this the coordinator saw "not busy" and started a second one.
+  readonly property bool cloudPending: _cloudRequested !== ""
   readonly property bool quotaChecking: _activeCloudMode === "quota" && statusProcess.running
   readonly property bool fullStatusChecking: _activeCloudMode === "sync-status" && statusProcess.running
 

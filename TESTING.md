@@ -23,7 +23,10 @@ guessing a confdir from an instance name), that `--confdir` selects an account
 and gives it its own cache *and* lock, that the confdir reaches the client as
 exactly one argument and cannot introduce a second flag, that the helper never
 creates a config directory it was only asked to read, that `--resume-unit` reads
-that account's own timer and no other's, that an account discovered by
+that account's own timer and no other's, that the scheduler interleaves accounts
+that have not reported rather than letting one monopolise the ramp, that a cloud
+check waiting behind a routine poll still holds the shared slot, that an account
+discovered by
 `--list-accounts` always survives the `--service` gate, that a present-but-
 unusable confdir is dropped rather than aliased onto the default account, and
 that the no-flag JSON output keeps exactly its expected field set.
