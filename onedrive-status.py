@@ -2,6 +2,7 @@
 
 import argparse
 import fcntl
+import hashlib
 import heapq
 import json
 import os
@@ -48,6 +49,46 @@ def default_confdir():
   if config_home:
     return Path(config_home) / "onedrive"
   return Path.home() / ".config" / "onedrive"
+
+
+def canonical_confdir(value):
+  # Collapses "." and ".." segments and any trailing slash so one account cannot
+  # key two different caches. Deliberately not realpath(): resolving symlinks
+  # would silently move an account whose config directory is a link.
+  return Path(os.path.normpath(str(value)))
+
+
+def valid_confdir(value):
+  text = str(value)
+  if not text.startswith("/"):
+    return False
+  # Nothing is ever shell-interpolated, so ".." is not a threat here and a real
+  # directory reached through one must not be rejected; only characters that
+  # cannot appear in a path at all are refused.
+  if any(ord(character) < 0x20 or ord(character) == 0x7F for character in text):
+    return False
+  path = canonical_confdir(text)
+  return not path.exists() or path.is_dir()
+
+
+def account_state_dir(service, confdir):
+  # The default account keeps the historical directory, so its cache and lock
+  # paths are unchanged. Every other account gets its own directory, which
+  # isolates the lock as well as the cache: a 30s cloud check on one account
+  # must not block another account's ordinary poll. Keyed on the service AND
+  # the config directory, because two services may share one confdir.
+  base = state_dir()
+  if confdir is not None and str(service) == DEFAULT_SERVICE \
+      and canonical_confdir(confdir) == canonical_confdir(default_confdir()):
+    return base
+  # os.fsencode, not str.encode: Linux paths are bytes, and a non-UTF-8 path
+  # arrives surrogate-escaped and would raise on a strict encode.
+  # An unknown confdir still gets a stable per-service key of its own.
+  confdir_key = os.fsencode(str(canonical_confdir(confdir))) if confdir is not None else b""
+  digest = hashlib.sha256(
+    os.fsencode(str(service)) + b"\0" + confdir_key
+  ).hexdigest()[:16]
+  return base / "accounts" / digest
 
 
 def state_dir():
@@ -101,7 +142,7 @@ def read_config_values(confdir):
       if not match:
         continue
       values[match.group(1)] = match.group(2).split("#", 1)[0].strip().strip('"')
-  except OSError:
+  except (OSError, UnicodeDecodeError):
     pass
   return values
 
@@ -109,7 +150,16 @@ def read_config_values(confdir):
 def client_config(confdir, onedrive_path):
   values = read_config_values(confdir)
   client_version = ""
-  if onedrive_path:
+  # The client CREATES the tree when handed a --confdir that does not exist, which
+  # would be a config write the widget has no business making — and, before the
+  # argv re-join landed, could have created a truncated path like "/home/u/My".
+  if onedrive_path and not Path(confdir).is_dir():
+    # --version takes no confdir, so the client version survives even when the
+    # account's directory does not exist yet.
+    exit_code, output = command_output([onedrive_path, "--version"], timeout=6)
+    if exit_code == 0:
+      client_version = output.strip().splitlines()[0].strip() if output.strip() else ""
+  if onedrive_path and Path(confdir).is_dir():
     exit_code, output = command_output(
       [onedrive_path, "--confdir", str(confdir), "--display-config"],
       timeout=6,
@@ -124,8 +174,15 @@ def client_config(confdir, onedrive_path):
         client_version = version_match.group(1).strip()
 
   sync_dir_value = values.get("sync_dir", "")
-  sync_dir = Path(os.path.expandvars(os.path.expanduser(sync_dir_value))) \
-    if sync_dir_value else Path.home() / "OneDrive"
+  if sync_dir_value:
+    sync_dir = Path(os.path.expandvars(os.path.expanduser(sync_dir_value)))
+  elif canonical_confdir(confdir) == canonical_confdir(default_confdir()):
+    sync_dir = Path.home() / "OneDrive"
+  else:
+    # An account whose config could not be read has no known sync directory.
+    # Falling back to ~/OneDrive would list the DEFAULT account's files under
+    # this account's identity, and cache them there.
+    sync_dir = None
   download_only = parse_bool(values.get("download_only"))
   upload_only = parse_bool(values.get("upload_only"))
   if download_only and upload_only:
@@ -147,19 +204,34 @@ def systemctl_value(arguments):
   return command_output(["systemctl", "--user", *arguments], timeout=4)
 
 
-def service_state(service):
+def unit_properties(unit, names):
+  """Parsed `systemctl show` properties for one unit, or None when the call failed.
+
+  Multi-valued properties (ExecStart) keep every line; single-valued ones keep
+  the first, which is all systemd emits.
+  """
   exit_code, output = systemctl_value([
     "show",
-    service,
-    "--property=LoadState,ActiveState,SubState,UnitFileState,Result,ExecMainCode,ExecMainStatus",
+    unit,
+    "--property=" + ",".join(names),
     "--no-pager",
   ])
+  if exit_code != 0:
+    return None
   properties = {}
-  if exit_code == 0:
-    for line in output.splitlines():
-      key, separator, value = line.partition("=")
-      if separator:
-        properties[key] = value.strip()
+  for line in output.splitlines():
+    key, separator, value = line.partition("=")
+    if separator:
+      properties.setdefault(key, []).append(value.strip())
+  return properties
+
+
+def service_state(service):
+  properties = unit_properties(
+    service,
+    ["LoadState", "ActiveState", "SubState", "UnitFileState", "Result", "ExecMainCode", "ExecMainStatus"],
+  ) or {}
+  properties = {key: values[0] for key, values in properties.items()}
   load_state = properties.get("LoadState", "")
   active_state = properties.get("ActiveState", "")
   unit_file_state = properties.get("UnitFileState", "")
@@ -203,6 +275,232 @@ def resume_timer_state():
   except (AttributeError, TypeError, ValueError):
     return 0
   return next_usec // 1_000_000 if next_usec > 0 else 0
+
+
+# Unit names the helper is willing to hand back to itself through --service.
+# Discovery and the --service gate MUST accept the same set, or an account can be
+# discoverable and permanently unusable. Backslash and colon are here because
+# systemd-escape produces them (e.g. "onedrive@team\x20space.service"); "/" is
+# not, so "../bad.service" is still refused.
+SERVICE_NAME_PATTERN = re.compile(r"[A-Za-z0-9_.@:\\-]+\.service")
+
+# "onedrive.service" or "onedrive@<instance>.service"; the bare template
+# "onedrive@.service" deliberately does not match — it is not an account.
+ONEDRIVE_UNIT_PATTERN = re.compile(r"onedrive(?:@(?P<instance>[A-Za-z0-9_.:\\-]+))?\.service")
+
+# systemd renders each ExecStart entry as a brace-delimited record of
+# " ; "-separated key=value fields:
+#   { path=/usr/bin/onedrive ; argv[]=/usr/bin/onedrive --monitor --confdir=/x ; ... }
+# Splitting the record into fields (rather than searching the whole string for
+# "argv[]=") is what keeps a path= value containing the literal text "argv[]="
+# from being read as the argv.
+# The delimiters are "{ " and " }" (with the spaces), so a brace inside an argv
+# value cannot be mistaken for a record boundary.
+EXEC_RECORD_PATTERN = re.compile(r"\{ (?P<body>.*?) \}")
+
+
+def exec_start_fields(body):
+  fields = {}
+  for part in body.split(" ; "):
+    key, separator, value = part.partition("=")
+    if separator:
+      fields.setdefault(key.strip(), value.strip())
+  return fields
+
+
+def join_confdir_tokens(head, rest):
+  # systemd joins argv with literal spaces and does not quote, so a confdir
+  # containing a space arrives split across tokens and is indistinguishable from
+  # separate arguments. Re-join greedily and let the filesystem arbitrate: the
+  # longest prefix that is an existing directory wins. A path that does not
+  # exist stays as the first token, which is the honest reading.
+  if head[:1] in ("'", '"'):
+    quote = head[0]
+    candidate = head[1:]
+    if candidate.endswith(quote):
+      return candidate[:-1]
+    for token in rest:
+      candidate += " " + token
+      if token.endswith(quote):
+        return candidate[:-1]
+    return candidate
+  best = head if Path(head).is_dir() else ""
+  candidate = head
+  for token in rest:
+    if token.startswith("-"):
+      break
+    candidate += " " + token
+    if Path(candidate).is_dir():
+      best = candidate
+  return best or head
+
+
+def confdir_from_argv(argv):
+  """The --confdir in one argv, or None when the argv carries none at all.
+
+  None and "" are different answers: None means this unit simply does not pass
+  --confdir (so the client default applies), while a returned string may still
+  be invalid. Collapsing the two is what let an unusable confdir silently
+  masquerade as the default account.
+  """
+  tokens = str(argv).split(" ")
+  for index, token in enumerate(tokens):
+    if token.startswith("--confdir="):
+      return join_confdir_tokens(token[len("--confdir="):], tokens[index + 1:])
+    if token == "--confdir" and index + 1 < len(tokens):
+      return join_confdir_tokens(tokens[index + 1], tokens[index + 2:])
+  return None
+
+
+def confdir_from_exec_start(value):
+  """The account's confdir; None when no --confdir applies; "" when unreadable.
+
+  Three answers, because the caller must treat them differently: None means the
+  client default genuinely applies, while "" means the ExecStart could not be
+  parsed and the unit must be dropped rather than aliased onto the default
+  account.
+  """
+  if not value.strip():
+    return None
+  # A unit may carry several ExecStart lines, only one of which is the OneDrive
+  # client; a preparatory command's --confdir must not be mistaken for it. The
+  # client's own record is authoritative once found, INCLUDING when it carries no
+  # --confdir at all -- otherwise a preparatory command's flag wins by default.
+  fallback = None
+  parsed = False
+  for match in EXEC_RECORD_PATTERN.finditer(value):
+    argv = exec_start_fields(match.group("body")).get("argv[]", "")
+    tokens = [token for token in argv.split(" ") if token]
+    if not tokens:
+      continue
+    parsed = True
+    confdir = confdir_from_argv(argv)
+    if "onedrive" in os.path.basename(tokens[0]):
+      return confdir
+    if fallback is None and confdir is not None:
+      fallback = confdir
+  return fallback if parsed else ""
+
+
+def unit_search_dirs():
+  # Overridable so the test suite can enumerate a sandboxed tree instead of the
+  # host's real unit directories; also useful in a container.
+  override = os.environ.get("OMAONEDRIVE_UNIT_ROOTS")
+  if override:
+    return [Path(part) for part in override.split(":") if part]
+  config_home = os.environ.get("XDG_CONFIG_HOME")
+  base = Path(config_home) if config_home else Path.home() / ".config"
+  runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+  directories = [base / "systemd" / "user"]
+  # Runtime enablement ("systemctl --user enable --runtime") writes here, and is
+  # invisible to both list-units and the persistent search path.
+  if runtime_dir:
+    directories.append(Path(runtime_dir) / "systemd" / "user")
+  directories.extend([
+    Path("/run/systemd/user"),
+    Path("/etc/systemd/user"),
+    # /lib/systemd/user is a usrmerge symlink to this one; globbing both is a
+    # pure duplicate that the name dedupe would only have to undo.
+    Path("/usr/lib/systemd/user"),
+  ])
+  return directories
+
+
+def wants_unit_names():
+  # "list-units" only reports units systemd currently has loaded, so an instance
+  # that is enabled but has never been started (or was garbage-collected while
+  # inactive) is invisible there. Its enablement symlink is not, and
+  # "list-unit-files" never expands template instances, so the symlinks are the
+  # only way to see it.
+  names = []
+  for directory in unit_search_dirs():
+    for pattern in ("*.wants/onedrive*.service", "*.requires/onedrive*.service"):
+      try:
+        for link in directory.glob(pattern):
+          names.append(link.name)
+      except OSError:
+        continue
+  return names
+
+
+def onedrive_unit_names():
+  names = []
+  exit_code, output = systemctl_value([
+    "list-units",
+    "onedrive*",
+    "--all",
+    "--no-legend",
+    "--plain",
+    "--no-pager",
+  ])
+  if exit_code == 0:
+    for line in output.splitlines():
+      fields = line.split()
+      if fields:
+        names.append(fields[0])
+  # Names swept off the filesystem are raw symlink names, never validated by
+  # systemd, so the pattern filter below is what keeps an unusable name out of
+  # the payload — it is a gate, not a tidy-up.
+  names.extend(wants_unit_names())
+  return list(dict.fromkeys(
+    name for name in names if ONEDRIVE_UNIT_PATTERN.fullmatch(name)
+  ))
+
+
+def default_account():
+  return {
+    "service": DEFAULT_SERVICE,
+    "instance": "",
+    "confdir": str(default_confdir()),
+    "description": "OneDrive",
+  }
+
+
+def account_entry(unit):
+  match = ONEDRIVE_UNIT_PATTERN.fullmatch(unit)
+  if match is None:
+    # Reachable from build_status: --service accepts any unit name, not only
+    # ours. Not an account, so there is nothing to describe.
+    return None
+  properties = unit_properties(unit, ["ExecStart", "Description", "LoadState"])
+  if properties is None:
+    return None
+  load_state = (properties.get("LoadState") or [""])[0]
+  # not-found is a stale enablement symlink; masked is a unit deliberately turned
+  # off, whose empty ExecStart would otherwise read as "uses the default confdir".
+  if load_state in ("not-found", "masked"):
+    return None
+  # All ExecStart lines are considered together: systemd emits one line per
+  # record, and the "prefer the record whose argv[0] is onedrive" rule only
+  # means anything when it can see every record at once.
+  confdir = confdir_from_exec_start("\n".join(properties.get("ExecStart", [])))
+  if confdir is None:
+    # The unit passes no --confdir at all, so the client default genuinely applies.
+    confdir = str(default_confdir())
+  elif valid_confdir(confdir):
+    confdir = str(canonical_confdir(confdir))
+  else:
+    # Present but unusable. Reporting the default here would alias this unit onto
+    # the default account's token, cache and sync directory.
+    return None
+  return {
+    "service": unit,
+    "instance": match.group("instance") or "",
+    "confdir": confdir,
+    "description": (properties.get("Description") or [""])[0] or "OneDrive",
+  }
+
+
+def discover_accounts():
+  accounts = [
+    entry for entry in (account_entry(unit) for unit in onedrive_unit_names()) if entry
+  ]
+  if not accounts:
+    # No systemd, no systemctl, or nothing enabled: degrade to the single
+    # default account so callers still get a usable list.
+    return [default_account()]
+  accounts.sort(key=lambda row: row["instance"])
+  return accounts
 
 
 TRANSFER_SKIP_PREFIXES = ("changes", "differences", "new items", "items", "advertised")
@@ -577,12 +875,36 @@ def status_text(installed, authenticated, service, journal, resume_at=0):
 
 def build_status(args):
   onedrive_path = shutil.which("onedrive")
-  confdir = default_confdir()
-  config = client_config(confdir, onedrive_path)
+  if args.confdir:
+    confdir = canonical_confdir(args.confdir)
+  elif args.service != DEFAULT_SERVICE:
+    # Asked about another account but told nothing about where it lives: read the
+    # confdir out of that unit, exactly as discovery does. Reporting the default
+    # account's token and files under this account's name would be a lie.
+    entry = account_entry(args.service)
+    # None, not the default: an unresolvable unit is an unknown account, and
+    # answering with the default account's data would be a lie about identity.
+    confdir = canonical_confdir(entry["confdir"]) if entry else None
+  else:
+    confdir = default_confdir()
+  config = client_config(confdir, onedrive_path) if confdir else {
+    "syncDir": None,
+    "syncMode": "Two-way",
+    "clientVersion": "",
+  }
   sync_dir = config["syncDir"]
-  authenticated = (confdir / "refresh_token").is_file()
+  authenticated = confdir is not None and (confdir / "refresh_token").is_file()
   service = service_state(args.service)
-  resume_at = resume_timer_state()
+  # RESUME_TIMER is one fixed unit that starts onedrive.service, so it says
+  # nothing about any other account; reading it for them reported "Paused ·
+  # resumes in ..." for accounts that were never paused. Per-account resume needs
+  # a --resume-unit option, which is not in this change's scope.
+  is_default_account = (
+    args.service == DEFAULT_SERVICE
+    and confdir is not None
+    and confdir == canonical_confdir(default_confdir())
+  )
+  resume_at = resume_timer_state() if is_default_account else 0
   journal = journal_state(args.service) if service["serviceAvailable"] else {
     "syncing": False,
     "lastSyncTs": 0,
@@ -595,9 +917,17 @@ def build_status(args):
     "syncStage": "",
   }
 
-  directory = state_dir()
+  directory = account_state_dir(args.service, confdir)
   directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+  # Every level, not just the leaf: mkdir applies its mode to the leaf alone, so
+  # a run for a non-default account would otherwise leave the plugin state root
+  # world-traversable on a machine where the default account never polls.
+  os.chmod(state_dir(), 0o700)
   os.chmod(directory, 0o700)
+  if directory != state_dir():
+    os.chmod(directory.parent, 0o700)
+  # Both the lock and the cache live in this directory, so a 30s cloud check on
+  # one account cannot block another account's ordinary poll.
   lock_path = directory / "status.lock"
   cache_path = directory / "status-cache.json"
   with lock_path.open("a+", encoding="utf-8") as lock:
@@ -611,10 +941,11 @@ def build_status(args):
     cached_sync_dir = str(cache.get("scanSyncDir", ""))
     cached_limit = int(cache.get("scanLimit", 0) or 0)
     scan_at = int(cache.get("scanAt", 0) or 0)
-    if cached_sync_dir != str(sync_dir) or cached_limit != args.limit or now - scan_at >= SCAN_CACHE_SECONDS:
-      cache["files"] = scan_recent(sync_dir, args.limit)
+    sync_dir_text = str(sync_dir) if sync_dir else ""
+    if cached_sync_dir != sync_dir_text or cached_limit != args.limit or now - scan_at >= SCAN_CACHE_SECONDS:
+      cache["files"] = scan_recent(sync_dir, args.limit) if sync_dir else []
       cache["scanAt"] = now
-      cache["scanSyncDir"] = str(sync_dir)
+      cache["scanSyncDir"] = sync_dir_text
       cache["scanLimit"] = args.limit
 
     check_quota = args.remote or args.quota
@@ -681,7 +1012,7 @@ def build_status(args):
     "syncStage": journal["syncStage"] if service["running"] else "",
     "statusText": status_text(onedrive_path is not None, authenticated, service, journal, resume_at),
     "resumeAt": resume_at,
-    "syncDir": str(sync_dir),
+    "syncDir": str(sync_dir) if sync_dir else "",
     "syncMode": config["syncMode"],
     "clientVersion": config["clientVersion"],
     "lastSyncTs": journal["lastSyncTs"],
@@ -709,10 +1040,21 @@ def main():
   parser.add_argument("--remote", action="store_true", help="query both quota and full-drive sync status")
   parser.add_argument("--limit", type=int, default=20, help="number of recent local files")
   parser.add_argument("--service", default=DEFAULT_SERVICE, help="systemd user service name")
+  parser.add_argument("--confdir", default=None, help="OneDrive config directory for this account")
+  parser.add_argument(
+    "--list-accounts",
+    action="store_true",
+    help="print the accounts configured on this machine as JSON and exit",
+  )
   args = parser.parse_args()
+  if args.list_accounts:
+    print(json.dumps(discover_accounts(), separators=(",", ":")))
+    return
   args.limit = max(5, min(50, args.limit))
-  if not re.fullmatch(r"[A-Za-z0-9_.@-]+\.service", args.service):
+  if not SERVICE_NAME_PATTERN.fullmatch(args.service):
     parser.error("invalid service name")
+  if args.confdir is not None and not valid_confdir(args.confdir):
+    parser.error("invalid confdir")
   print(json.dumps(build_status(args), separators=(",", ":")))
 
 
