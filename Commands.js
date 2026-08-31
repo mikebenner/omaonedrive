@@ -54,7 +54,12 @@ function control(action, service) {
 // The interactive CLI flows are the only place --resync may appear, and only
 // through omarchy-launch-terminal, where the client prompts for confirmation.
 function login(confdir, mode) {
-  var command = ["omarchy-launch-terminal", "onedrive", "--confdir", String(confdir)]
+  var command = ["omarchy-launch-terminal", "onedrive"]
+  // Same rule as status(): an unspecified confdir means the client's own
+  // default, not an empty string. Passing "--confdir ''" would hand the CLI a
+  // value it must reject, and this path is reachable before discovery has
+  // supplied an identity.
+  if (String(confdir || "") !== "") command.push("--confdir", String(confdir))
   if (mode === "reauth") command.push("--reauth")
   else if (mode === "resync") {
     command.push("--sync")

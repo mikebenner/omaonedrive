@@ -48,6 +48,23 @@ test("interactive flows carry the account's own confdir", () => {
     ["omarchy-launch-terminal", "onedrive", "--confdir", DRAGONES.confdir, "--sync", "--resync"])
 })
 
+test("an unspecified confdir is omitted from the interactive flows too", () => {
+  // Reachable before discovery supplies an identity: the seeded fallback
+  // descriptor has no confdir. "--confdir ''" is not the same as no --confdir --
+  // the client would reject it -- and the old code ran a plain `onedrive` here.
+  assert.deepEqual(Commands.login(""), ["omarchy-launch-terminal", "onedrive"])
+  assert.deepEqual(Commands.login("", "reauth"),
+    ["omarchy-launch-terminal", "onedrive", "--reauth"])
+  assert.deepEqual(Commands.login("", "resync"),
+    ["omarchy-launch-terminal", "onedrive", "--sync", "--resync"])
+  assert.deepEqual(Commands.login(null), ["omarchy-launch-terminal", "onedrive"])
+  // No builder may ever emit an empty argument.
+  for (const vector of [Commands.login(""), Commands.login("", "reauth"),
+                        Commands.status("/p/h.py", {}, 20)]) {
+    for (const argument of vector) assert.notEqual(argument, "", vector.join(" "))
+  }
+})
+
 test("the plain account sends exactly today's command", () => {
   // Before discovery supplies an identity, and for the plain service afterwards,
   // the helper's own defaults ARE the single-account behaviour. Sending the
