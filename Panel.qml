@@ -152,6 +152,16 @@ Panel {
   }
   onPanelStyleChanged: ensureCursor()
 
+  // Switching account changes which rows exist and whether they are enabled, so
+  // the keyboard cursor is revalidated and the view returns to the top rather
+  // than leaving the reader halfway down a different account's activity list.
+  function selectAccount(service) {
+    if (!service || service === oneDrive.selectedService) return
+    oneDrive.selectAccount(service)
+    if (panelScroll) panelScroll.contentY = 0
+    ensureCursor()
+  }
+
   Service {
     id: oneDrive
     settings: root.settings
@@ -166,6 +176,8 @@ Panel {
     function onBusyChanged() { root.ensureCursor() }
     function onResumeAtChanged() { root.ensureCursor() }
     function onActiveChanged() { root.ensureCursor() }
+    function onSelectedServiceChanged() { root.ensureCursor() }
+    function onAccountCountChanged() { root.ensureCursor() }
   }
 
   BarIconButton {
@@ -217,6 +229,46 @@ Panel {
           id: content
           width: panelScroll.width
           spacing: Style.space(10)
+
+          // Account selector. Hidden entirely for a single account, where it
+          // contributes no height and no spacing, so both panel styles keep
+          // their current layout. The hero title stays "OneDrive" either way --
+          // the selected segment already carries identity.
+          Flickable {
+            id: accountTabsScroll
+            visible: oneDrive.accountCount > 1
+            width: parent.width
+            height: visible ? accountTabs.implicitHeight : 0
+            contentWidth: accountTabs.implicitWidth
+            contentHeight: height
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            flickableDirection: Flickable.HorizontalFlick
+            // Only this row scrolls sideways when the labels do not fit; the
+            // panel itself never widens.
+            interactive: contentWidth > width
+
+            Row {
+              id: accountTabs
+              spacing: Style.space(4)
+              readonly property real segmentWidth: {
+                var count = Math.max(1, oneDrive.accountCount)
+                var available = accountTabsScroll.width - spacing * (count - 1)
+                return Math.max(Style.space(88), available / count)
+              }
+
+              Repeater {
+                model: oneDrive.accounts
+                delegate: AccountTab {
+                  required property var modelData
+                  account: modelData
+                  width: accountTabs.segmentWidth
+                  selected: modelData && modelData.service === oneDrive.selectedService
+                  onActivated: root.selectAccount(modelData.service)
+                }
+              }
+            }
+          }
 
           Item {
             id: headerItem
@@ -891,6 +943,61 @@ Panel {
         horizontalAlignment: Text.AlignRight
         Layout.alignment: Qt.AlignTop | Qt.AlignRight
       }
+    }
+  }
+
+  component AccountTab: CursorSurface {
+    id: accountTab
+    property var account: null
+    property bool selected: false
+    readonly property bool keyboardEnabled: true
+    signal activated()
+    function keyboardActivate() { activated() }
+
+    readonly property string stateKind: account
+      ? Model.badgeKind(Model.accountStateKind(account)) : ""
+
+    foreground: root.foreground
+    // The selected segment carries the border; the rest read as quiet labels.
+    bordered: accountTab.selected
+    hasCursor: (accountTabMouse.containsMouse || root.cursorItem === accountTab)
+    implicitHeight: Style.space(30)
+    height: implicitHeight
+
+    Row {
+      anchors.centerIn: parent
+      spacing: Style.space(5)
+
+      Text {
+        anchors.verticalCenter: parent.verticalCenter
+        visible: accountTab.stateKind !== ""
+        text: Model.badgeGlyph(accountTab.stateKind)
+        color: accountTab.stateKind === "attention" || accountTab.stateKind === "login"
+          ? Color.urgent
+          : (accountTab.stateKind === "syncing" ? Color.accent : root.dim)
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+
+      Text {
+        anchors.verticalCenter: parent.verticalCenter
+        text: accountTab.account
+          ? Model.accountName(accountTab.account.instance, accountTab.account.description)
+          : ""
+        color: accountTab.selected ? root.foreground : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+        width: Math.min(implicitWidth, Math.max(0, accountTab.width - Style.space(22)))
+      }
+    }
+
+    MouseArea {
+      id: accountTabMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: accountTab.activated()
     }
   }
 

@@ -388,6 +388,17 @@ function badgeKind(kind) {
   return ""   // healthy, and checking before the first poll
 }
 
+// The glyph for a badge kind. Shared so the bar badge and the account selector
+// cannot drift apart -- they are the same vocabulary at two sizes.
+function badgeGlyph(kind) {
+  if (kind === "missing") return "\u{f0156}"
+  if (kind === "login") return "\u{f030b}"
+  if (kind === "paused") return "\u{f03e4}"
+  if (kind === "syncing") return "\u{f0453}"
+  if (kind === "attention") return "\u{f002a}"
+  return ""
+}
+
 // Decide how to bring the current descriptor list in line with what discovery
 // returned, as a plan of operations rather than a rebuilt list. Delegates must
 // be preserved for services that still exist: recreating them would drop
@@ -454,6 +465,7 @@ if (typeof module !== "undefined") {
     aggregateAccounts: aggregateAccounts,
     aggregateTooltip: aggregateTooltip,
     badgeKind: badgeKind,
+    badgeGlyph: badgeGlyph,
     reconcilePlan: reconcilePlan,
     filePath: filePath
   }
