@@ -21,10 +21,20 @@ cat >"$fake_bin/onedrive" <<'SH'
 #!/bin/bash
 set -euo pipefail
 printf '%s\n' "$*" >>"${FAKE_ONEDRIVE_LOG:?}"
+confdir=""
+previous=""
+for argument in "$@"; do
+  [[ $previous == --confdir ]] && confdir="$argument"
+  previous="$argument"
+done
+sync_dir="${FAKE_SYNC_DIR:?}"
+if [[ -n $confdir && -f "$confdir/fake_sync_dir" ]]; then
+  sync_dir=$(cat "$confdir/fake_sync_dir")
+fi
 case " $* " in
   *" --display-config "*)
     printf "Application version                          = onedrive v2.5.11\n"
-    printf "Config option 'sync_dir'                      = %s\n" "${FAKE_SYNC_DIR:?}"
+    printf "Config option 'sync_dir'                      = %s\n" "$sync_dir"
     printf "Config option 'upload_only'                   = %s\n" "${FAKE_UPLOAD_ONLY:-false}"
     printf "Config option 'download_only'                 = %s\n" "${FAKE_DOWNLOAD_ONLY:-true}"
     ;;
@@ -340,6 +350,54 @@ if python3 "$root/onedrive-status.py" --service '../bad.service' >/dev/null 2>&1
   exit 1
 fi
 
+# --- --confdir selects the account -------------------------------------------
+
+alt_confdir="$test_home/.config/onedrive-accounts/work"
+alt_sync_dir="$test_home/Work OneDrive"
+mkdir -p "$alt_confdir" "$alt_sync_dir"
+printf 'sync_dir = "%s"\n' "$alt_sync_dir" >"$alt_confdir/config"
+printf '%s' "$alt_sync_dir" >"$alt_confdir/fake_sync_dir"
+
+python3 "$root/onedrive-status.py" --confdir "$alt_confdir" --service onedrive@work.service --limit 5 \
+  >"$test_root/alt-confdir.json"
+jq -e --arg sync_dir "$alt_sync_dir" '
+  .ok == true
+  and .syncDir == $sync_dir
+  and .authenticated == false
+  and .statusText == "Login required"
+' "$test_root/alt-confdir.json" >/dev/null
+grep -Fq -- "--confdir $alt_confdir --display-config" "$FAKE_ONEDRIVE_LOG"
+# Accounts must not share the status cache, or one account's quota leaks into
+# another's panel.
+state_root="$XDG_STATE_HOME/omarchy/io.github.salemsayed.omaonedrive"
+[[ -f "$state_root/status-cache.json" ]]
+[[ $(find "$state_root" -maxdepth 1 -name 'status-cache-*.json' | wc -l) == 1 ]]
+
+# The default account still reads the default directory.
+python3 "$root/onedrive-status.py" --limit 5 >"$test_root/default-confdir.json"
+jq -e --arg sync_dir "$sync_dir" '.syncDir == $sync_dir and .authenticated == true' \
+  "$test_root/default-confdir.json" >/dev/null
+
+for bad_confdir in 'relative/onedrive' '/etc/../etc/onedrive' "$test_home/.config/onedrive/config"; do
+  if python3 "$root/onedrive-status.py" --confdir "$bad_confdir" >/dev/null 2>&1; then
+    echo "invalid confdir unexpectedly passed: $bad_confdir" >&2
+    exit 1
+  fi
+done
+
+# Today's no-flag invocation keeps exactly the fields the QML layer reads.
+python3 "$root/onedrive-status.py" --limit 5 >"$test_root/shape.json"
+jq -e '
+  ([keys_unsorted[]] | sort) == ([
+    "ok","installed","serviceAvailable","running","enabled","activeState","subState",
+    "serviceResult","serviceExitStatus","serviceFailed","resyncRequired","authenticated",
+    "reauthRequired","syncing","syncStage","statusText","resumeAt","syncDir","syncMode",
+    "clientVersion","lastSyncTs","usedBytes","quotaBytes","quotaKnown","quotaCheckedTs",
+    "quotaError","remoteStatus","syncStatusCheckedTs","syncStatusError","remoteCheckedTs",
+    "remoteError","files","activity","lastError"
+  ] | sort)
+' "$test_root/shape.json" >/dev/null
+
 grep -Fq '["systemctl", "--user", "stop", "onedrive.service"]' "$root/Service.qml"
 grep -Fq '["systemctl", "--user", "start", "onedrive.service"]' "$root/Service.qml"
 grep -Fq '["omarchy-launch-terminal", "onedrive"]' "$root/Service.qml"
@@ -362,4 +420,4 @@ if grep -v 'omarchy-launch-terminal' "$root/Service.qml" \
   exit 1
 fi
 
-echo "Status tests passed (local state, timed pause, remote opt-in, cache, permissions, login and control boundaries)"
+echo "Status tests passed (local state, timed pause, remote opt-in, cache, permissions, login, --confdir and control boundaries)"

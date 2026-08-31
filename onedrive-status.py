@@ -2,6 +2,7 @@
 
 import argparse
 import fcntl
+import hashlib
 import heapq
 import json
 import os
@@ -48,6 +49,30 @@ def default_confdir():
   if config_home:
     return Path(config_home) / "onedrive"
   return Path.home() / ".config" / "onedrive"
+
+
+MAX_CONFDIR_LENGTH = 4096
+
+
+def valid_confdir(value):
+  text = str(value)
+  if not text.startswith("/") or len(text) > MAX_CONFDIR_LENGTH:
+    return False
+  if any(ord(character) < 0x20 or ord(character) == 0x7F for character in text):
+    return False
+  if any(part == ".." for part in text.split("/")):
+    return False
+  path = Path(text)
+  return not path.exists() or path.is_dir()
+
+
+def cache_name(confdir):
+  # The default account keeps the historical file name; any other config
+  # directory gets its own cache so accounts never read each other's quota.
+  if Path(confdir) == default_confdir():
+    return "status-cache.json"
+  digest = hashlib.sha256(str(confdir).encode("utf-8")).hexdigest()[:16]
+  return "status-cache-" + digest + ".json"
 
 
 def state_dir():
@@ -577,7 +602,8 @@ def status_text(installed, authenticated, service, journal, resume_at=0):
 
 def build_status(args):
   onedrive_path = shutil.which("onedrive")
-  confdir = default_confdir()
+  requested_confdir = getattr(args, "confdir", None)
+  confdir = Path(requested_confdir) if requested_confdir else default_confdir()
   config = client_config(confdir, onedrive_path)
   sync_dir = config["syncDir"]
   authenticated = (confdir / "refresh_token").is_file()
@@ -599,7 +625,7 @@ def build_status(args):
   directory.mkdir(parents=True, exist_ok=True, mode=0o700)
   os.chmod(directory, 0o700)
   lock_path = directory / "status.lock"
-  cache_path = directory / "status-cache.json"
+  cache_path = directory / cache_name(confdir)
   with lock_path.open("a+", encoding="utf-8") as lock:
     os.chmod(lock_path, 0o600)
     fcntl.flock(lock, fcntl.LOCK_EX)
@@ -709,10 +735,13 @@ def main():
   parser.add_argument("--remote", action="store_true", help="query both quota and full-drive sync status")
   parser.add_argument("--limit", type=int, default=20, help="number of recent local files")
   parser.add_argument("--service", default=DEFAULT_SERVICE, help="systemd user service name")
+  parser.add_argument("--confdir", default=None, help="OneDrive config directory for this account")
   args = parser.parse_args()
   args.limit = max(5, min(50, args.limit))
   if not re.fullmatch(r"[A-Za-z0-9_.@-]+\.service", args.service):
     parser.error("invalid service name")
+  if args.confdir is not None and not valid_confdir(args.confdir):
+    parser.error("invalid confdir")
   print(json.dumps(build_status(args), separators=(",", ":")))
 
 
