@@ -14,6 +14,17 @@ var DOCUMENT_EXTENSIONS = {
   pages: true, numbers: true, key: true
 }
 
+var IPC_TARGET = "io.github.salemsayed.omaonedrive"
+
+// Commands passed to omarchy-notification-send --exec are deliberately a
+// closed set. The helper persists this hint with the notification, so a click
+// keeps working after omarchy-shell or this bar widget reloads.
+function notificationActionCommand(behavior) {
+  if (behavior === "open") return "omarchy-shell " + IPC_TARGET + " open"
+  if (behavior === "repair") return "omarchy-shell " + IPC_TARGET + " resync"
+  return ""
+}
+
 function defaultStatus() {
   return {
     ok: true,
@@ -270,6 +281,7 @@ if (typeof module !== "undefined") {
     folderName: folderName,
     tooltip: tooltip,
     heroMeta: heroMeta,
-    filePath: filePath
+    filePath: filePath,
+    notificationActionCommand: notificationActionCommand
   }
 }

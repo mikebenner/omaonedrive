@@ -148,34 +148,25 @@ Item {
     statusProcess.running = true
   }
 
-  signal openPanelRequested()
-
   function notify(urgency, summary, body) {
     if (!notificationsEnabled) return
     Quickshell.execDetached([
-      "notify-send", "--app-name=OmaOneDrive", "--urgency=" + urgency, summary, body
+      "omarchy-notification-send", "--app-name", "OmaOneDrive", "--urgency", urgency,
+      summary, body
     ])
   }
 
-  // Omarchy's notification popups invoke the libnotify action registered under
-  // the canonical "default" identifier when the popup is clicked, rather than
-  // rendering per-action buttons — so the action is always "default" and the
-  // intended behavior is tracked here. One tracked notify-send at a time so
-  // the click can be read back from stdout; overlaps fall back to notify().
-  property string _notifyBehavior: ""
-
-  function notifyWithAction(urgency, summary, body, behavior, actionLabel) {
+  function notifyWithAction(urgency, summary, body, behavior) {
     if (!notificationsEnabled) return
-    if (notifyProcess.running) {
+    var actionCommand = Model.notificationActionCommand(behavior)
+    if (actionCommand === "") {
       notify(urgency, summary, body)
       return
     }
-    _notifyBehavior = behavior
-    notifyProcess.command = [
-      "notify-send", "--app-name=OmaOneDrive", "--urgency=" + urgency,
-      "--action=default=" + actionLabel, summary, body
-    ]
-    notifyProcess.running = true
+    Quickshell.execDetached([
+      "omarchy-notification-send", "--app-name", "OmaOneDrive", "--urgency", urgency,
+      "--exec", actionCommand, summary, body
+    ])
   }
 
   function applyStatus(raw) {
@@ -224,15 +215,15 @@ Item {
     if (resyncRequired && !wasResync)
       notifyWithAction("critical", "OneDrive needs a resync",
         "Syncing stopped until the resync repair runs.",
-        "repair", "Run resync repair")
+        "repair")
     else if (serviceFailed && !wasFailed)
       notifyWithAction("critical", "OneDrive sync failed",
         lastError !== "" ? lastError : "The OneDrive service entered a failed state.",
-        "open", "Open OneDrive panel")
+        "open")
     if (reauthRequired && !wasReauth)
       notifyWithAction("critical", "OneDrive needs reauthentication",
         "Sign in again to keep syncing.",
-        "open", "Open OneDrive panel")
+        "open")
     if (hadAttention && !serviceFailed && !resyncRequired && !reauthRequired)
       notify("normal", "OneDrive recovered", "Syncing is healthy again.")
     if (!wasStorageSevere && Model.usageSevere(usedBytes, quotaBytes, quotaKnown))
@@ -402,24 +393,6 @@ Item {
     interval: 2500
     repeat: false
     onTriggered: root.actionStatus = ""
-  }
-
-  Process {
-    id: notifyProcess
-    running: false
-    command: []
-    stdout: StdioCollector {
-      id: notifyStdout
-      waitForEnd: true
-    }
-    stderr: StdioCollector { waitForEnd: true }
-    onExited: function(exitCode) {
-      var behavior = root._notifyBehavior
-      root._notifyBehavior = ""
-      if (String(notifyStdout.text || "").trim() !== "default") return
-      if (behavior === "open") root.openPanelRequested()
-      else if (behavior === "repair") root.repairResync()
-    }
   }
 
   Process {

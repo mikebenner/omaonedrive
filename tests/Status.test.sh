@@ -345,7 +345,12 @@ grep -Fq '["systemctl", "--user", "start", "onedrive.service"]' "$root/Service.q
 grep -Fq '["omarchy-launch-terminal", "onedrive"]' "$root/Service.qml"
 grep -Fq '["omarchy-launch-terminal", "onedrive", "--reauth"]' "$root/Service.qml"
 grep -Fq '["omarchy-launch-terminal", "onedrive", "--sync", "--resync"]' "$root/Service.qml"
-grep -Fq '"notify-send"' "$root/Service.qml"
+grep -Fq '"omarchy-notification-send"' "$root/Service.qml"
+grep -Fq '"--exec", actionCommand' "$root/Service.qml"
+if grep -Fq '"notify-send"' "$root/Service.qml"; then
+  echo "service still calls notify-send directly" >&2
+  exit 1
+fi
 grep -Fq 'retryStaleQuotaOnOpen' "$root/Panel.qml"
 grep -Fq '(oneDrive.syncing ? "Syncing" : (oneDrive.active ? "Monitoring" : "Paused"))' "$root/Panel.qml"
 grep -Fq 'command.push("--quota")' "$root/Service.qml"

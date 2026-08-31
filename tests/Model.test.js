@@ -113,3 +113,15 @@ test("folder, tooltip, and plugin paths handle spaces", () => {
   }), "Monitoring · Upload only")
   assert.equal(Model.filePath("file:///tmp/Oma%20OneDrive/status.py"), "/tmp/Oma OneDrive/status.py")
 })
+
+test("notification click actions use a closed set of durable IPC commands", () => {
+  assert.equal(
+    Model.notificationActionCommand("open"),
+    "omarchy-shell io.github.salemsayed.omaonedrive open"
+  )
+  assert.equal(
+    Model.notificationActionCommand("repair"),
+    "omarchy-shell io.github.salemsayed.omaonedrive resync"
+  )
+  assert.equal(Model.notificationActionCommand("arbitrary user input"), "")
+})
