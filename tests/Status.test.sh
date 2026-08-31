@@ -552,6 +552,26 @@ assert module.confdir_from_exec_start(
   "{ path=/usr/bin/prepare ; argv[]=/usr/bin/prepare --confdir=/staging ; ignore_errors=no ; }\n"
   "{ path=/usr/bin/onedrive ; argv[]=/usr/bin/onedrive --monitor --confdir=/accounts/work ; ignore_errors=no ; }"
 ) == "/accounts/work"
+# ...and the client's record stays authoritative when it carries no --confdir at
+# all, or a preparatory command's flag would win by default.
+assert module.confdir_from_exec_start(
+  "{ path=/usr/bin/prepare ; argv[]=/usr/bin/prepare --confdir=/staging ; ignore_errors=no ; }\n"
+  "{ path=/usr/bin/onedrive ; argv[]=/usr/bin/onedrive --monitor ; ignore_errors=no ; }"
+) is None
+
+# A brace inside the confdir is not a record boundary. Returning None here would
+# put the unit on the default account, which is the aliasing this guards against.
+assert module.confdir_from_exec_start(
+  "{ path=/usr/bin/onedrive ; argv[]=/usr/bin/onedrive --monitor --confdir=/srv/{acct}/od ; ignore_errors=no ; }"
+) == "/srv/{acct}/od"
+# An ExecStart that cannot be parsed at all is "unknown" (drop the unit), never
+# "uses the default".
+assert module.confdir_from_exec_start("garbage with no record") == ""
+assert not module.valid_confdir("")
+
+# systemd joins argv with single spaces, so a tab inside a path is part of the
+# path and must survive.
+assert module.confdir_from_argv("/usr/bin/onedrive --monitor --confdir=/a\tb") == "/a\tb"
 
 # systemd joins argv with literal spaces and never quotes, so a confdir
 # containing a space arrives split. The longest prefix that is a real directory
@@ -724,6 +744,22 @@ fi
 # An account whose config could not be read must not inherit the DEFAULT
 # account's sync directory, or its files show under this account's identity.
 jq -e '.syncDir == "" and (.files | length) == 0' "$test_root/absent.json" >/dev/null
+
+# --- --service without --confdir resolves the account, not the default -------
+
+# Reporting the default account's token, files and sync directory under another
+# account's name would be a lie; the confdir is read from that unit instead.
+FAKE_UNITS="$units" python3 "$root/onedrive-status.py" --service onedrive@personal.service --limit 5 \
+  >"$test_root/service-only.json"
+jq -e '.authenticated == false and .syncDir == ""' "$test_root/service-only.json" >/dev/null
+
+# --- the plugin state root stays 0700 even if only another account ever runs --
+
+isolated_state="$test_root/isolated-state"
+XDG_STATE_HOME="$isolated_state" FAKE_UNITS="$units" python3 "$root/onedrive-status.py" \
+  --service onedrive@work.service --confdir "$alt_confdir" --limit 5 >/dev/null
+[[ $(stat -c '%a' "$isolated_state/omarchy/io.github.salemsayed.omaonedrive") == 700 ]]
+[[ $(stat -c '%a' "$isolated_state/omarchy/io.github.salemsayed.omaonedrive/accounts") == 700 ]]
 
 # --- the resume timer is not cross-account -----------------------------------
 

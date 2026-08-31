@@ -150,6 +150,12 @@ def client_config(confdir, onedrive_path):
   # The client CREATES the tree when handed a --confdir that does not exist, which
   # would be a config write the widget has no business making — and, before the
   # argv re-join landed, could have created a truncated path like "/home/u/My".
+  if onedrive_path and not Path(confdir).is_dir():
+    # --version takes no confdir, so the client version survives even when the
+    # account's directory does not exist yet.
+    exit_code, output = command_output([onedrive_path, "--version"], timeout=6)
+    if exit_code == 0:
+      client_version = output.strip().splitlines()[0].strip() if output.strip() else ""
   if onedrive_path and Path(confdir).is_dir():
     exit_code, output = command_output(
       [onedrive_path, "--confdir", str(confdir), "--display-config"],
@@ -285,7 +291,9 @@ ONEDRIVE_UNIT_PATTERN = re.compile(r"onedrive(?:@(?P<instance>[A-Za-z0-9_.:\\-]+
 # Splitting the record into fields (rather than searching the whole string for
 # "argv[]=") is what keeps a path= value containing the literal text "argv[]="
 # from being read as the argv.
-EXEC_RECORD_PATTERN = re.compile(r"\{(?P<body>[^{}]*)\}")
+# The delimiters are "{ " and " }" (with the spaces), so a brace inside an argv
+# value cannot be mistaken for a record boundary.
+EXEC_RECORD_PATTERN = re.compile(r"\{ (?P<body>.*?) \}")
 
 
 def exec_start_fields(body):
@@ -333,7 +341,7 @@ def confdir_from_argv(argv):
   be invalid. Collapsing the two is what let an unusable confdir silently
   masquerade as the default account.
   """
-  tokens = str(argv).split()
+  tokens = str(argv).split(" ")
   for index, token in enumerate(tokens):
     if token.startswith("--confdir="):
       return join_confdir_tokens(token[len("--confdir="):], tokens[index + 1:])
@@ -343,24 +351,33 @@ def confdir_from_argv(argv):
 
 
 def confdir_from_exec_start(value):
+  """The account's confdir; None when no --confdir applies; "" when unreadable.
+
+  Three answers, because the caller must treat them differently: None means the
+  client default genuinely applies, while "" means the ExecStart could not be
+  parsed and the unit must be dropped rather than aliased onto the default
+  account.
+  """
+  if not value.strip():
+    return None
   # A unit may carry several ExecStart lines, only one of which is the OneDrive
-  # client; a preparatory command's --confdir must not be mistaken for it. Prefer
-  # the record whose argv[0] is actually onedrive, and only fall back to the
-  # first --confdir found when no record looks like the client at all.
+  # client; a preparatory command's --confdir must not be mistaken for it. The
+  # client's own record is authoritative once found, INCLUDING when it carries no
+  # --confdir at all -- otherwise a preparatory command's flag wins by default.
   fallback = None
+  parsed = False
   for match in EXEC_RECORD_PATTERN.finditer(value):
     argv = exec_start_fields(match.group("body")).get("argv[]", "")
-    tokens = argv.split()
+    tokens = [token for token in argv.split(" ") if token]
     if not tokens:
       continue
+    parsed = True
     confdir = confdir_from_argv(argv)
-    if confdir is None:
-      continue
     if "onedrive" in os.path.basename(tokens[0]):
       return confdir
-    if fallback is None:
+    if fallback is None and confdir is not None:
       fallback = confdir
-  return fallback
+  return fallback if parsed else ""
 
 
 def unit_search_dirs():
@@ -852,7 +869,16 @@ def status_text(installed, authenticated, service, journal, resume_at=0):
 
 def build_status(args):
   onedrive_path = shutil.which("onedrive")
-  confdir = canonical_confdir(args.confdir) if args.confdir else default_confdir()
+  if args.confdir:
+    confdir = canonical_confdir(args.confdir)
+  elif args.service != DEFAULT_SERVICE:
+    # Asked about another account but told nothing about where it lives: read the
+    # confdir out of that unit, exactly as discovery does. Reporting the default
+    # account's token and files under this account's name would be a lie.
+    entry = account_entry(args.service)
+    confdir = canonical_confdir(entry["confdir"]) if entry else default_confdir()
+  else:
+    confdir = default_confdir()
   config = client_config(confdir, onedrive_path)
   sync_dir = config["syncDir"]
   authenticated = (confdir / "refresh_token").is_file()
@@ -861,7 +887,10 @@ def build_status(args):
   # nothing about any other account; reading it for them reported "Paused ·
   # resumes in ..." for accounts that were never paused. Per-account resume needs
   # a --resume-unit option, which is not in this change's scope.
-  resume_at = resume_timer_state() if args.service == DEFAULT_SERVICE else 0
+  is_default_account = (
+    args.service == DEFAULT_SERVICE and confdir == canonical_confdir(default_confdir())
+  )
+  resume_at = resume_timer_state() if is_default_account else 0
   journal = journal_state(args.service) if service["serviceAvailable"] else {
     "syncing": False,
     "lastSyncTs": 0,
@@ -876,6 +905,10 @@ def build_status(args):
 
   directory = account_state_dir(args.service, confdir)
   directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+  # Every level, not just the leaf: mkdir applies its mode to the leaf alone, so
+  # a run for a non-default account would otherwise leave the plugin state root
+  # world-traversable on a machine where the default account never polls.
+  os.chmod(state_dir(), 0o700)
   os.chmod(directory, 0o700)
   if directory != state_dir():
     os.chmod(directory.parent, 0o700)
