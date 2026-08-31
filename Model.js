@@ -243,6 +243,138 @@ function heroMeta(status) {
   return parts.join(" · ")
 }
 
+// --- multi-account aggregation ------------------------------------------------
+
+// "personal" -> "Personal", "work-mail" -> "Work Mail". The plain service has no
+// instance and is simply "OneDrive", which is also the hero title, so a
+// single-account install reads exactly as it does today. The description is
+// accepted for callers that want it but is not used: systemd descriptions are
+// sentences ("OneDrive sync (personal account)"), not labels for a tab.
+function accountName(instance, description) {
+  var value = String(instance || "").trim()
+  if (value === "") return "OneDrive"
+  var words = value.replace(/[_-]+/g, " ").split(" ")
+  var named = []
+  for (var index = 0; index < words.length; index++) {
+    var word = words[index]
+    if (word === "") continue
+    named.push(word.charAt(0).toUpperCase() + word.slice(1))
+  }
+  return named.length ? named.join(" ") : value
+}
+
+// One total order, worst first. Ranked rather than named-compared so the bar can
+// pick a winner without knowing what any particular state means.
+//
+// resync is deliberately checked before failed: a required resync exits 126,
+// which sets serviceFailed too, and "Resync required" is the actionable half.
+var ACCOUNT_STATES = [
+  { kind: "resync", rank: 1 },
+  { kind: "reauth", rank: 2 },
+  { kind: "failed", rank: 3 },
+  { kind: "missing", rank: 4 },
+  { kind: "login", rank: 5 },
+  { kind: "unavailable", rank: 6 },
+  { kind: "paused", rank: 7 },
+  { kind: "starting", rank: 8 },
+  { kind: "syncing", rank: 9 },
+  { kind: "healthy", rank: 10 }
+]
+
+function accountStateKind(account) {
+  if (!account || typeof account !== "object") return "missing"
+  if (account.resyncRequired === true) return "resync"
+  if (account.reauthRequired === true) return "reauth"
+  if (account.serviceFailed === true) return "failed"
+  if (account.installed !== true) return "missing"
+  if (account.authenticated !== true) return "login"
+  if (account.serviceAvailable !== true) return "unavailable"
+  if (String(account.activeState || "") === "activating") return "starting"
+  if (account.running !== true) return "paused"
+  if (account.syncing === true) return "syncing"
+  return "healthy"
+}
+
+function accountState(account) {
+  var kind = accountStateKind(account)
+  for (var index = 0; index < ACCOUNT_STATES.length; index++) {
+    if (ACCOUNT_STATES[index].kind === kind) return ACCOUNT_STATES[index]
+  }
+  return ACCOUNT_STATES[ACCOUNT_STATES.length - 1]
+}
+
+// Worst of N. Until every discovered account has produced a first sample the
+// aggregate is "checking" with no badge, so default property values cannot flash
+// a missing-client badge before the first poll lands.
+function aggregateAccounts(accounts) {
+  var list = Array.isArray(accounts) ? accounts : []
+  if (list.length === 0) {
+    return { kind: "checking", rank: 0, count: 0, worst: null, anyActive: false, initialized: false }
+  }
+  var initialized = true
+  var worst = null
+  var worstRank = Number.MAX_VALUE
+  var anyActive = false
+  for (var index = 0; index < list.length; index++) {
+    var account = list[index]
+    if (!account || account.initialized !== true) {
+      initialized = false
+      continue
+    }
+    var state = accountState(account)
+    // Strictly less-than, so equal ranks keep discovery order.
+    if (state.rank < worstRank) {
+      worstRank = state.rank
+      worst = account
+    }
+    if (account.running === true || String(account.activeState || "") === "activating"
+        || account.syncing === true) {
+      anyActive = true
+    }
+  }
+  if (!initialized || worst === null) {
+    return { kind: "checking", rank: 0, count: list.length, worst: null, anyActive: anyActive, initialized: false }
+  }
+  return {
+    kind: accountStateKind(worst),
+    rank: worstRank,
+    count: list.length,
+    worst: worst,
+    anyActive: anyActive,
+    initialized: true
+  }
+}
+
+// N=1 keeps exactly today's one-line tooltip. N>1 is attributed and ordered
+// worst first, then discovery order, capped so a large installation cannot grow
+// an unbounded tooltip.
+function aggregateTooltip(accounts, nowMs, maxLines) {
+  var list = Array.isArray(accounts) ? accounts : []
+  if (list.length === 0) return "Checking OneDrive…"
+  if (list.length === 1) {
+    return list[0] && list[0].initialized === true
+      ? tooltip(list[0], nowMs) : "Checking OneDrive…"
+  }
+  var summary = aggregateAccounts(list)
+  if (!summary.initialized) return "Checking " + list.length + " OneDrive accounts…"
+
+  var ordered = list.slice().map(function (account, index) {
+    return { account: account, index: index, rank: accountState(account).rank }
+  })
+  ordered.sort(function (left, right) {
+    return left.rank === right.rank ? left.index - right.index : left.rank - right.rank
+  })
+
+  var cap = maxLines === undefined ? 5 : maxLines
+  var lines = ["OneDrive · " + list.length + " accounts"]
+  for (var index = 0; index < ordered.length && index < cap; index++) {
+    var account = ordered[index].account
+    lines.push(accountName(account.instance, account.description) + ": " + tooltip(account, nowMs))
+  }
+  if (ordered.length > cap) lines.push("+" + (ordered.length - cap) + " more")
+  return lines.join("\n")
+}
+
 function filePath(url) {
   return decodeURIComponent(String(url || "").replace(/^file:\/\//, ""))
 }
@@ -270,6 +402,11 @@ if (typeof module !== "undefined") {
     folderName: folderName,
     tooltip: tooltip,
     heroMeta: heroMeta,
+    accountName: accountName,
+    accountStateKind: accountStateKind,
+    accountState: accountState,
+    aggregateAccounts: aggregateAccounts,
+    aggregateTooltip: aggregateTooltip,
     filePath: filePath
   }
 }
