@@ -142,3 +142,49 @@ test("a partially-initialized set says it is still checking", () => {
   const accounts = [account({ instance: "a" }), { initialized: false, instance: "b" }]
   assert.equal(Model.aggregateTooltip(accounts, Date.now()), "Checking 2 OneDrive accounts…")
 })
+
+test("every state maps onto the existing badge vocabulary", () => {
+  // The badge set is deliberately smaller than the state set: at eight pixels a
+  // badge carries a category, and the tooltip carries the detail.
+  assert.equal(Model.badgeKind("resync"), "attention")
+  assert.equal(Model.badgeKind("reauth"), "attention")
+  assert.equal(Model.badgeKind("failed"), "attention")
+  assert.equal(Model.badgeKind("missing"), "missing")
+  assert.equal(Model.badgeKind("unavailable"), "missing")
+  assert.equal(Model.badgeKind("login"), "login")
+  assert.equal(Model.badgeKind("paused"), "paused")
+  assert.equal(Model.badgeKind("starting"), "syncing")
+  assert.equal(Model.badgeKind("syncing"), "syncing")
+  // Healthy shows no badge, and neither does the pre-first-poll state -- that
+  // is the whole point of having a checking state.
+  assert.equal(Model.badgeKind("healthy"), "")
+  assert.equal(Model.badgeKind("checking"), "")
+})
+
+test("no state is left without a badge decision", () => {
+  const states = ["resync", "reauth", "failed", "missing", "login", "unavailable",
+    "paused", "starting", "syncing", "healthy", "checking"]
+  for (const kind of states) {
+    assert.equal(typeof Model.badgeKind(kind), "string", kind)
+  }
+})
+
+test("a single account produces the same badge it does today", () => {
+  // Today's bar computes: !installed -> missing, !authenticated -> login,
+  // attention flags -> attention, syncing/starting -> syncing, !active -> paused.
+  const cases = [
+    [{ installed: false }, "missing"],
+    [{ authenticated: false }, "login"],
+    [{ serviceFailed: true }, "attention"],
+    [{ resyncRequired: true }, "attention"],
+    [{ reauthRequired: true }, "attention"],
+    [{ syncing: true }, "syncing"],
+    [{ activeState: "activating", running: false }, "syncing"],
+    [{ running: false, activeState: "inactive" }, "paused"],
+    [{}, ""]
+  ]
+  for (const [overrides, expected] of cases) {
+    const summary = Model.aggregateAccounts([account(overrides)])
+    assert.equal(Model.badgeKind(summary.kind), expected, JSON.stringify(overrides))
+  }
+})

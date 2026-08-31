@@ -13,22 +13,24 @@ BarWidget {
   property bool ipcRegistrationReady: false
 
   readonly property var service: panelLoader.item ? panelLoader.item.service : null
-  readonly property bool active: service ? service.active : false
-  readonly property bool syncing: service ? service.syncing : false
-  readonly property bool starting: service ? service.activeState === "activating" : false
-  readonly property bool installed: service ? service.installed : false
-  readonly property bool authenticated: service ? service.authenticated : false
-  readonly property bool attention: service
-    ? service.serviceFailed || service.resyncRequired || service.reauthRequired
-    : false
+
+  // Worst of N. With one account this resolves to exactly the state the old
+  // flat ternary produced; the mapping and the precedence are table-tested in
+  // tests/Aggregate.test.js rather than spelled out here.
+  readonly property var aggregate: service
+    ? service.aggregate
+    : ({ kind: "checking", count: 0, anyActive: false, initialized: false })
+  readonly property int accountCount: service ? service.accountCount : 0
+
+  // The icon stays lit while ANY account is working, so one paused account does
+  // not dim a bar that is still syncing two others.
+  readonly property bool active: aggregate.anyActive === true
+  readonly property bool syncing: aggregate.kind === "syncing" || aggregate.kind === "starting"
+  readonly property bool installed: aggregate.kind !== "missing"
   readonly property color iconColor: active
     ? (bar ? bar.barForeground : Color.foreground)
     : Qt.darker(bar ? bar.barForeground : Color.foreground, 1.55)
-  readonly property string badgeKind: !installed ? "missing"
-    : (!authenticated ? "login"
-      : (attention ? "attention"
-        : (syncing || starting ? "syncing"
-          : (!active ? "paused" : ""))))
+  readonly property string badgeKind: Model.badgeKind(aggregate.kind)
   readonly property string badgeGlyph: badgeKind === "missing" ? "󰅖"
     : (badgeKind === "login" ? "󰌋"
       : (badgeKind === "paused" ? "󰏤"
@@ -39,7 +41,7 @@ BarWidget {
     : (badgeKind === "syncing" ? Color.accent : iconColor)
   readonly property color badgeBackground: bar ? bar.background : Color.background
   readonly property string tooltipText: service
-    ? Model.tooltip(service, Date.now())
+    ? Model.aggregateTooltip(service.accounts, Date.now())
     : "Checking OneDrive…"
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
   readonly property bool popoutSwitchClosing: panelLoader.item ? panelLoader.item.popoutSwitchClosing === true : false

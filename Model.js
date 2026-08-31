@@ -375,6 +375,19 @@ function aggregateTooltip(accounts, nowMs, maxLines) {
   return lines.join("\n")
 }
 
+// Map an aggregate state onto the bar's existing badge vocabulary. The visual
+// language does not grow with the state list: several states share a badge and
+// the tooltip distinguishes them, because at eight pixels a badge can only
+// carry "something is wrong", "signed out", "paused" or "working".
+function badgeKind(kind) {
+  if (kind === "resync" || kind === "reauth" || kind === "failed") return "attention"
+  if (kind === "missing" || kind === "unavailable") return "missing"
+  if (kind === "login") return "login"
+  if (kind === "paused") return "paused"
+  if (kind === "starting" || kind === "syncing") return "syncing"
+  return ""   // healthy, and checking before the first poll
+}
+
 // Decide how to bring the current descriptor list in line with what discovery
 // returned, as a plan of operations rather than a rebuilt list. Delegates must
 // be preserved for services that still exist: recreating them would drop
@@ -440,6 +453,7 @@ if (typeof module !== "undefined") {
     accountState: accountState,
     aggregateAccounts: aggregateAccounts,
     aggregateTooltip: aggregateTooltip,
+    badgeKind: badgeKind,
     reconcilePlan: reconcilePlan,
     filePath: filePath
   }
