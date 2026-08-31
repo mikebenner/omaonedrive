@@ -75,19 +75,17 @@ SH
 cat >"$fake_bin/systemctl" <<'SH'
 #!/bin/bash
 unit=""
+timer=""
 for argument in "$@"; do
   case "$argument" in
     *.service) unit="$argument" ;;
+    *.timer) timer="$argument" ;;
   esac
 done
 case " $* " in
   *" list-timers "*)
     # Only the unit actually asked for reports a pending resume, so an account
     # cannot inherit another account's timer.
-    timer=""
-    for argument in "$@"; do
-      case "$argument" in *.timer) timer="$argument" ;; esac
-    done
     if [[ -n ${FAKE_RESUME_AT:-} && $timer == "${FAKE_RESUME_TIMER:-omaonedrive-resume.timer}" ]]; then
       printf '[{"next":%s,"unit":"%s"}]\n' "$((FAKE_RESUME_AT * 1000000))" "$timer"
     else
@@ -830,31 +828,49 @@ jq -e '
   and (.statusText | startswith("Paused · resumes in") | not)
 ' "$test_root/resume-personal.json" >/dev/null
 
-# The plain account keeps the legacy unit name, so an in-flight timer survives
-# an upgrade.
+# With no flag, a NON-default account reports no resume time rather than
+# borrowing the legacy timer -- and this account is authenticated, so the status
+# text clause bites instead of short-circuiting on "Login required".
 FAKE_ACTIVE=inactive FAKE_RESUME_AT="$resume_at" python3 "$root/onedrive-status.py" \
-  --resume-unit omaonedrive-resume --limit 5 >"$test_root/resume-legacy.json"
+  --service onedrive@work.service --confdir "$paused_confdir" --limit 5 \
+  >"$test_root/other-resume.json"
+jq -e '
+  .authenticated == true
+  and .resumeAt == 0
+  and (.statusText | startswith("Paused · resumes in") | not)
+' "$test_root/other-resume.json" >/dev/null
+
+# The plain account keeps the legacy unit name with no flag at all, so an
+# in-flight timer survives an upgrade...
+FAKE_ACTIVE=inactive FAKE_RESUME_AT="$resume_at" python3 "$root/onedrive-status.py" --limit 5 \
+  >"$test_root/resume-legacy.json"
 jq -e --argjson resume_at "$resume_at" '.resumeAt == $resume_at' "$test_root/resume-legacy.json" >/dev/null
 
-# The value becomes a systemd unit name, so it is validated like a service name.
-for bad_unit in 'bad/unit' 'unit with space' '../escape'; do
+# ...and that legacy default follows the SERVICE, not the config directory: the
+# timer starts onedrive.service, so its pending time is that service's whichever
+# directory was named.
+FAKE_ACTIVE=inactive FAKE_RESUME_AT="$resume_at" python3 "$root/onedrive-status.py" \
+  --confdir "$paused_confdir" --limit 5 >"$test_root/resume-legacy-otherdir.json"
+jq -e --argjson resume_at "$resume_at" '.resumeAt == $resume_at' \
+  "$test_root/resume-legacy-otherdir.json" >/dev/null
+
+# The value becomes a systemd unit name passed to systemctl as a positional
+# argument, so it is validated at least as strictly as a service name.
+for bad_unit in 'bad/unit' 'unit with space' '../escape' \
+                'omaonedrive-resume.timer' 'omaonedrive-resume.service' \
+                '-Mguest' '-Hsomewhere.example.com' \
+                "$(python3 -c 'print("u" * 260)')"; do
   if python3 "$root/onedrive-status.py" --resume-unit "$bad_unit" >/dev/null 2>&1; then
     echo "invalid resume unit unexpectedly passed: $bad_unit" >&2
     exit 1
   fi
 done
-
-# --- the resume timer is not cross-account -----------------------------------
-
-resume_at=$(($(date +%s) + 3600))
-FAKE_ACTIVE=inactive FAKE_RESUME_AT="$resume_at" python3 "$root/onedrive-status.py" \
-  --service onedrive@work.service --confdir "$alt_confdir" --limit 5 >"$test_root/other-resume.json"
-jq -e '.resumeAt == 0 and (.statusText | startswith("Paused · resumes in") | not)' \
-  "$test_root/other-resume.json" >/dev/null
-# ...but the default account still reports it.
-FAKE_ACTIVE=inactive FAKE_RESUME_AT="$resume_at" python3 "$root/onedrive-status.py" --limit 5 \
-  >"$test_root/default-resume.json"
-jq -e --argjson resume_at "$resume_at" '.resumeAt == $resume_at' "$test_root/default-resume.json" >/dev/null
+# A leading dash is refused on the service gate too: systemctl would read
+# "-Mguest.service" as its --machine option rather than a unit name.
+if python3 "$root/onedrive-status.py" --service '-Mguest.service' >/dev/null 2>&1; then
+  echo "option-shaped service name unexpectedly passed" >&2
+  exit 1
+fi
 
 grep -Fq '["systemctl", "--user", "stop", "onedrive.service"]' "$root/Service.qml"
 grep -Fq '["systemctl", "--user", "start", "onedrive.service"]' "$root/Service.qml"

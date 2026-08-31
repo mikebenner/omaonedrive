@@ -254,7 +254,7 @@ def service_state(service):
   }
 
 
-def resume_timer_state(unit=DEFAULT_RESUME_UNIT):
+def resume_timer_state(unit):
   exit_code, output = systemctl_value([
     "list-timers",
     unit + ".timer",
@@ -277,15 +277,31 @@ def resume_timer_state(unit=DEFAULT_RESUME_UNIT):
   return next_usec // 1_000_000 if next_usec > 0 else 0
 
 
-# Unit names the helper is willing to hand back to itself through --service.
-# Discovery and the --service gate MUST accept the same set, or an account can be
-# discoverable and permanently unusable. Backslash and colon are here because
-# systemd-escape produces them (e.g. "onedrive@team\x20space.service"); "/" is
-# not, so "../bad.service" is still refused.
-SERVICE_NAME_PATTERN = re.compile(r"[A-Za-z0-9_.@:\\-]+\.service")
+# Unit names the helper is willing to hand back to itself through --service or
+# --resume-unit. Discovery and the --service gate MUST accept the same set, or an
+# account can be discoverable and permanently unusable, so both patterns are
+# derived from one class. Backslash and colon are here because systemd-escape
+# produces them (e.g. "onedrive@team\x20space.service"); "/" is not, so
+# "../bad.service" is still refused. The first character may not be "-": these
+# names are passed to systemctl as positional arguments, and "-Mguest.timer" or
+# "-Hsomewhere.timer" would be read as its --machine/--host OPTIONS instead.
+UNIT_NAME = r"[A-Za-z0-9_.@:\\][A-Za-z0-9_.@:\\-]*"
+SERVICE_NAME_PATTERN = re.compile(UNIT_NAME + r"\.service")
+RESUME_UNIT_PATTERN = re.compile(UNIT_NAME)
 
-# A resume unit name, without the .timer/.service suffix the caller never passes.
-RESUME_UNIT_PATTERN = re.compile(r"[A-Za-z0-9_.@:\\-]+")
+# systemd's own ceiling for a unit name, which the ".timer" suffix counts against.
+MAX_UNIT_NAME_LENGTH = 255
+
+
+def valid_resume_unit(value):
+  # The caller passes a BARE unit name; resume_timer_state appends the suffix.
+  # A value that already carries one would silently query "<name>.timer.timer"
+  # and report no pending resume at all.
+  if value.endswith((".timer", ".service")):
+    return False
+  if len(value) + len(".timer") > MAX_UNIT_NAME_LENGTH:
+    return False
+  return RESUME_UNIT_PATTERN.fullmatch(value) is not None
 
 # "onedrive.service" or "onedrive@<instance>.service"; the bare template
 # "onedrive@.service" deliberately does not match — it is not an account.
@@ -898,23 +914,15 @@ def build_status(args):
   sync_dir = config["syncDir"]
   authenticated = confdir is not None and (confdir / "refresh_token").is_file()
   service = service_state(args.service)
-  # Each account schedules its own transient resume unit, so the caller says
-  # which one to read. Without it, the default name refers to the unit that
-  # starts onedrive.service and says nothing about any other account -- reading
-  # it for them reported "Paused · resumes in ..." for accounts never paused --
-  # so an unnamed non-default account reports no resume time rather than a
-  # borrowed one.
-  is_default_account = (
-    args.service == DEFAULT_SERVICE
-    and confdir is not None
-    and confdir == canonical_confdir(default_confdir())
+  # Each account schedules its own transient resume unit, so the caller names it.
+  # Without the flag only the plain service has a well-known one --
+  # DEFAULT_RESUME_UNIT starts onedrive.service, so its pending time belongs to
+  # that SERVICE whichever config directory was named -- and every other account
+  # reports no resume time rather than borrowing that one.
+  resume_unit = args.resume_unit or (
+    DEFAULT_RESUME_UNIT if args.service == DEFAULT_SERVICE else ""
   )
-  if args.resume_unit:
-    resume_at = resume_timer_state(args.resume_unit)
-  elif is_default_account:
-    resume_at = resume_timer_state()
-  else:
-    resume_at = 0
+  resume_at = resume_timer_state(resume_unit) if resume_unit else 0
   journal = journal_state(args.service) if service["serviceAvailable"] else {
     "syncing": False,
     "lastSyncTs": 0,
@@ -1054,7 +1062,9 @@ def main():
   parser.add_argument(
     "--resume-unit",
     default=None,
-    help="transient resume unit for this account (default: " + DEFAULT_RESUME_UNIT + ")",
+    help="bare name of this account's transient resume unit, without a suffix; "
+         "when omitted only " + DEFAULT_SERVICE + " reads its legacy "
+         + DEFAULT_RESUME_UNIT + " timer and every other account reports none",
   )
   parser.add_argument(
     "--list-accounts",
@@ -1070,7 +1080,7 @@ def main():
     parser.error("invalid service name")
   if args.confdir is not None and not valid_confdir(args.confdir):
     parser.error("invalid confdir")
-  if args.resume_unit is not None and not RESUME_UNIT_PATTERN.fullmatch(args.resume_unit):
+  if args.resume_unit is not None and not valid_resume_unit(args.resume_unit):
     parser.error("invalid resume unit")
   print(json.dumps(build_status(args), separators=(",", ":")))
 

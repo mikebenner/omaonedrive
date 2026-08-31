@@ -23,8 +23,10 @@ guessing a confdir from an instance name), that `--confdir` selects an account
 and gives it its own cache *and* lock, that the confdir reaches the client as
 exactly one argument and cannot introduce a second flag, that the helper never
 creates a config directory it was only asked to read, that `--resume-unit` reads
-that account's own timer and no other's, and that the no-flag JSON output keeps
-exactly the field set the QML layer reads.
+that account's own timer and no other's, that an account discovered by
+`--list-accounts` always survives the `--service` gate, that a present-but-
+unusable confdir is dropped rather than aliased onto the default account, and
+that the no-flag JSON output keeps exactly its expected field set.
 
 ## In the shell
 

@@ -8,22 +8,32 @@ and panel-switch contracts.
 `Service.qml` is the asynchronous boundary between QML and the operating
 system. Local polling, cloud checks, and systemd control each run in a
 `Quickshell.Io.Process`; no command is constructed through a shell.
-Timed pauses stop `onedrive.service` and schedule a fixed-name transient
-`omaonedrive-resume.timer` through `systemd-run --user`. Replacing a preset or
+Timed pauses stop `onedrive.service` and schedule the transient
+`omaonedrive-resume.timer` through `systemd-run --user`. That is today's
+single-account behaviour: the helper accepts a different resume unit per account
+through `--resume-unit`, which the current QML does not yet pass, just as it does
+not yet pass `--service`, `--confdir` or `--list-accounts`. Replacing a preset or
 resuming immediately first cancels that timer. If scheduling fails after the
 service was stopped, the service is started again so a failed timer cannot
 leave sync paused unexpectedly.
 
 `onedrive-status.py` reads:
 
-- the effective `sync_dir` from `onedrive --display-config`;
+- the account's `config` file, every `name = value` line of it, and the
+  effective `sync_dir` from that file and from `onedrive --display-config`; an
+  account whose config cannot be read reports no sync directory at all rather
+  than falling back to another account's;
 - presence (never contents) of the CLI's `refresh_token` file;
-- effective two-way, download-only, or upload-only mode from the CLI's
-  read-only `--display-config` output;
+- effective two-way, download-only, or upload-only mode from the same two
+  sources;
+- the client version, from `--display-config`, or from `onedrive --version`
+  when the account's directory does not exist;
 - the `--service` unit's (default `onedrive.service`) load, enabled, active,
   failure, result, and main-process exit states;
 - the next activation of that account's transient timed-resume user timer, named
-  by `--resume-unit`, when present;
+  by `--resume-unit`, when present; without that flag only `onedrive.service`
+  has a well-known one and reads its legacy `omaonedrive-resume.timer`, while
+  every other account reports no resume time rather than borrowing it;
 - bounded user-journal history for sync-in-progress, live reconciliation phase,
   last-complete, and error state;
 - recent regular files below the configured sync directory, without following
@@ -31,18 +41,28 @@ leave sync paused unexpectedly.
 - the names, `Description`, `LoadState` and `ExecStart` command line of the
   `onedrive` and `onedrive@<instance>` user units, from which each account's
   `--confdir` is read out of `argv[]` — never guessed from the instance name;
-- systemd enablement symlinks matching `onedrive*.service` under the user
-  (`$XDG_CONFIG_HOME/systemd/user`, `$XDG_RUNTIME_DIR/systemd/user`) and system
-  (`/run/systemd/user`, `/etc/systemd/user`, `/usr/lib/systemd/user`) unit
-  directories, so an enabled-but-unloaded instance is still discovered.
+- systemd enablement symlinks, `*.wants/onedrive*.service` and
+  `*.requires/onedrive*.service`, under the user (`$XDG_CONFIG_HOME/systemd/user`
+  or `~/.config/systemd/user`, and `$XDG_RUNTIME_DIR/systemd/user` when that
+  variable is set) and system (`/run/systemd/user`, `/etc/systemd/user`,
+  `/usr/lib/systemd/user`) unit directories — or, when `OMAONEDRIVE_UNIT_ROOTS`
+  is set, the colon-separated directories it names *instead* of all of those — so
+  an enabled-but-unloaded instance is still discovered;
+- whether each candidate config directory exists, including every space-joined
+  prefix of a `--confdir` read out of an `ExecStart`, since systemd renders argv
+  unquoted and the longest existing directory is the intended one.
 
 `--confdir` selects which account's config directory is read, defaulting to
-`~/.config/onedrive`; a value must be an absolute path that is not an existing
-non-directory, and it reaches the CLI as a single argument. `--service` and
-`--resume-unit` name that account's unit and its transient resume unit. Given a
+`$XDG_CONFIG_HOME/onedrive` or `~/.config/onedrive`; a value must be an absolute
+path containing no control characters, and must not be an existing
+non-directory. It reaches the CLI as a single argument. `--service` and
+`--resume-unit` name that account's unit and the bare name of its transient
+resume unit; neither may begin with `-`, because both are passed to `systemctl`
+as positional arguments where such a value would be read as an option. Given a
 non-default `--service` with no `--confdir`, the helper reads that unit's own
 config directory rather than describing the default account under another
-account's name. `--list-accounts` is a separate mode with its own output shape:
+account's name; a unit that cannot be resolved is reported as an unknown account
+with no config directory, never as the default one. `--list-accounts` is a separate mode with its own output shape:
 it prints a JSON array of the discovered accounts (`service`, `instance`,
 `confdir`, `description`) and exits without building a status object or invoking
 the OneDrive client at all, falling back to the single default account when
@@ -68,5 +88,5 @@ cloud check cannot block another account's refresh.
 
 No refresh-token content, Microsoft response URL, access token, browser state,
 or synced-file content crosses the helper boundary; the only additional data
-`--list-accounts` emits is each unit's name, its systemd description, and its
-config-directory path.
+`--list-accounts` emits is each unit's name, the instance parsed out of that
+name, its systemd description, and its config-directory path.
