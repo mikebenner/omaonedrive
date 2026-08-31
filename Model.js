@@ -375,6 +375,39 @@ function aggregateTooltip(accounts, nowMs, maxLines) {
   return lines.join("\n")
 }
 
+// Decide how to bring the current descriptor list in line with what discovery
+// returned, as a plan of operations rather than a rebuilt list. Delegates must
+// be preserved for services that still exist: recreating them would drop
+// in-flight processes and the notification edge history that decides whether a
+// condition is newly true.
+//
+// `current` is the ordered list of service names already present.
+// Returns { updates: [{index,row}], appends: [row], removes: [index desc] }.
+function reconcilePlan(current, discovered) {
+  var present = Array.isArray(current) ? current : []
+  var rows = Array.isArray(discovered) ? discovered : []
+  var plan = { updates: [], appends: [], removes: [] }
+  var seen = {}
+
+  for (var index = 0; index < rows.length; index++) {
+    var row = rows[index]
+    if (!row || typeof row !== "object") continue
+    var service = String(row.service || "")
+    if (service === "") continue
+    if (seen[service]) continue   // discovery should not repeat, but never trust it
+    seen[service] = true
+    var existing = present.indexOf(service)
+    if (existing === -1) plan.appends.push(row)
+    else plan.updates.push({ index: existing, row: row })
+  }
+
+  // Descending, so applying them cannot invalidate the indices that follow.
+  for (var scan = present.length - 1; scan >= 0; scan--) {
+    if (!seen[present[scan]]) plan.removes.push(scan)
+  }
+  return plan
+}
+
 function filePath(url) {
   return decodeURIComponent(String(url || "").replace(/^file:\/\//, ""))
 }
@@ -407,6 +440,7 @@ if (typeof module !== "undefined") {
     accountState: accountState,
     aggregateAccounts: aggregateAccounts,
     aggregateTooltip: aggregateTooltip,
+    reconcilePlan: reconcilePlan,
     filePath: filePath
   }
 }

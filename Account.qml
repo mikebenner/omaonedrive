@@ -114,7 +114,7 @@ Item {
   }
 
   function checkQuota() {
-    requestCloudCheck("quota")
+    requestCloud("quota")
   }
 
   // Opening the panel is explicit user intent, so a failed storage result
@@ -137,10 +137,22 @@ Item {
   }
 
   function checkFullStatus() {
-    requestCloudCheck("sync-status")
+    requestCloud("sync-status")
   }
 
-  function requestCloudCheck(mode) {
+  // Cloud checks are slow and shared: the coordinator serialises them across
+  // every account so two 30s checks cannot run at once. Without a coordinator
+  // this account serves itself, which keeps Account usable on its own.
+  function requestCloud(mode) {
+    if (helperPath === "") return
+    if (coordinator) {
+      coordinator.requestCloud(root, mode)
+      return
+    }
+    startCloudCheck(mode)
+  }
+
+  function startCloudCheck(mode) {
     if (helperPath === "") return
     if (statusProcess.running) {
       _cloudRequested = mode
@@ -367,26 +379,15 @@ Item {
     return "file://" + parts.join("/")
   }
 
-  Timer {
-    interval: root.refreshIntervalSec * 1000
-    repeat: true
-    running: true
-    triggeredOnStart: true
-    onTriggered: root.refresh(false)
-  }
+  // No repeating poll timer here: the coordinator owns cadence, so N accounts
+  // share one budget instead of each polling every refreshIntervalSec. The
+  // timers that remain are per-account control flow -- settling after a control
+  // command, and clearing transient action text.
 
-  Timer {
-    id: startupRamp
-    property int ticks: 0
-    interval: 2000
-    repeat: true
-    running: true
-    onTriggered: {
-      ticks += 1
-      if (root.running || ticks >= 15) startupRamp.running = false
-      else root.refresh(false)
-    }
-  }
+  // True while this account is still ramping up at startup: the coordinator
+  // gives it priority slots until it reports running, or the ramp gives up.
+  property int rampTicks: 0
+  readonly property bool ramping: rampTicks < 15 && !running
 
   Timer {
     id: delayedRefresh
@@ -469,7 +470,7 @@ Item {
       if (root._cloudRequested !== "") {
         var requested = root._cloudRequested
         root._cloudRequested = ""
-        Qt.callLater(function() { root.requestCloudCheck(requested) })
+        Qt.callLater(function() { root.startCloudCheck(requested) })
       }
       if (root._quotaRetryQueued) {
         root._quotaRetryQueued = false
