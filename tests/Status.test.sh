@@ -69,6 +69,12 @@ SH
 
 cat >"$fake_bin/systemctl" <<'SH'
 #!/bin/bash
+unit=""
+for argument in "$@"; do
+  case "$argument" in
+    *.service) unit="$argument" ;;
+  esac
+done
 case " $* " in
   *" list-timers "*)
     if [[ -n ${FAKE_RESUME_AT:-} ]]; then
@@ -76,6 +82,47 @@ case " $* " in
     else
       echo '[]'
     fi
+    ;;
+  *" list-units "*)
+    if [[ ${FAKE_NO_SYSTEMD:-0} == 1 ]]; then
+      exit 1
+    fi
+    if [[ -n ${FAKE_UNITS:-} ]]; then
+      printf '%s\n' "$FAKE_UNITS"
+    fi
+    exit 0
+    ;;
+  *"--property=ExecStart"*)
+    if [[ ${FAKE_NO_SYSTEMD:-0} == 1 ]]; then
+      exit 1
+    fi
+    case "$unit" in
+      onedrive.service)
+        echo 'LoadState=loaded'
+        echo 'Description=OneDrive Client for Linux'
+        echo 'ExecStart={ path=/usr/bin/onedrive ; argv[]=/usr/bin/onedrive --monitor ; ignore_errors=no ; start_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }'
+        ;;
+      onedrive@personal.service)
+        # confdir deliberately unrelated to the instance name, written with the
+        # "--confdir=<path>" spelling.
+        echo 'LoadState=loaded'
+        echo 'Description=OneDrive sync (personal account)'
+        echo 'ExecStart={ path=/usr/bin/onedrive ; argv[]=/usr/bin/onedrive --monitor --confdir=/srv/onedrive/mailboxes/alpha ; ignore_errors=no ; start_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }'
+        ;;
+      onedrive@work.service)
+        # Same, with the "--confdir <path>" spelling systemd also preserves.
+        echo 'LoadState=loaded'
+        echo 'Description=OneDrive sync (work account)'
+        echo 'ExecStart={ path=/usr/bin/onedrive ; argv[]=/usr/bin/onedrive --monitor --confdir /srv/onedrive/mailboxes/beta ; ignore_errors=no ; start_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }'
+        ;;
+      onedrive@ghost.service)
+        echo 'LoadState=not-found'
+        echo 'Description=onedrive@ghost.service'
+        echo 'ExecStart='
+        ;;
+      *) exit 1 ;;
+    esac
+    exit 0
     ;;
   *" show "*)
     active=${FAKE_ACTIVE:-active}
@@ -350,6 +397,91 @@ if python3 "$root/onedrive-status.py" --service '../bad.service' >/dev/null 2>&1
   exit 1
 fi
 
+# --- multi-account discovery -------------------------------------------------
+
+# A loaded template ("onedrive@.service") is not an account, and a unit whose
+# LoadState is not-found is a stale enablement symlink, not an account.
+units=$'onedrive.service loaded active running OneDrive Client for Linux
+onedrive@.service loaded active running OneDrive sync template
+onedrive@ghost.service not-found inactive dead onedrive@ghost.service
+onedrive@work.service loaded inactive dead OneDrive sync (work account)
+onedrive@personal.service loaded active running OneDrive sync (personal account)'
+
+log_lines_before=$(wc -l <"$FAKE_ONEDRIVE_LOG")
+FAKE_UNITS="$units" python3 "$root/onedrive-status.py" --list-accounts >"$test_root/accounts.json"
+jq -e --arg default_confdir "$test_home/.config/onedrive" '
+  length == 3
+  and .[0].service == "onedrive.service"
+  and .[0].instance == ""
+  and .[0].confdir == $default_confdir
+  and .[0].description == "OneDrive Client for Linux"
+  and .[1].service == "onedrive@personal.service"
+  and .[1].instance == "personal"
+  and .[1].confdir == "/srv/onedrive/mailboxes/alpha"
+  and .[1].description == "OneDrive sync (personal account)"
+  and .[2].service == "onedrive@work.service"
+  and .[2].instance == "work"
+  and .[2].confdir == "/srv/onedrive/mailboxes/beta"
+  and .[2].description == "OneDrive sync (work account)"
+' "$test_root/accounts.json" >/dev/null
+# Discovery is pure enumeration: it must not shell out to the OneDrive client.
+[[ $(wc -l <"$FAKE_ONEDRIVE_LOG") == "$log_lines_before" ]]
+
+FAKE_NO_SYSTEMD=1 python3 "$root/onedrive-status.py" --list-accounts >"$test_root/accounts-no-systemd.json"
+jq -e --arg default_confdir "$test_home/.config/onedrive" '
+  length == 1
+  and .[0].service == "onedrive.service"
+  and .[0].instance == ""
+  and .[0].confdir == $default_confdir
+  and .[0].description == "OneDrive"
+' "$test_root/accounts-no-systemd.json" >/dev/null
+
+python3 "$root/onedrive-status.py" --list-accounts >"$test_root/accounts-empty.json"
+jq -e --arg default_confdir "$test_home/.config/onedrive" '
+  length == 1 and .[0].service == "onedrive.service" and .[0].confdir == $default_confdir
+' "$test_root/accounts-empty.json" >/dev/null
+
+# An instance that is enabled but not currently loaded never appears in
+# "list-units", and "list-unit-files" never expands template instances, so
+# discovery also reads the enablement symlinks.
+mkdir -p "$test_home/.config/systemd/user/default.target.wants"
+ln -sf "$test_home/.config/systemd/user/onedrive@.service" \
+  "$test_home/.config/systemd/user/default.target.wants/onedrive@work.service"
+python3 "$root/onedrive-status.py" --list-accounts >"$test_root/accounts-unloaded.json"
+jq -e '
+  length == 1
+  and .[0].service == "onedrive@work.service"
+  and .[0].instance == "work"
+  and .[0].confdir == "/srv/onedrive/mailboxes/beta"
+' "$test_root/accounts-unloaded.json" >/dev/null
+
+python3 - "$root/onedrive-status.py" <<'ACCOUNTS_PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("omaonedrive_status", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+assert module.confdir_from_argv("/usr/bin/onedrive --monitor --confdir=/a/b") == "/a/b"
+assert module.confdir_from_argv("/usr/bin/onedrive --monitor --confdir /a/b") == "/a/b"
+assert module.confdir_from_argv("/usr/bin/onedrive --monitor") == ""
+# The confdir comes out of argv[], never out of path=.
+decoy = (
+  "{ path=/opt/onedrive--confdir=/decoy ; "
+  "argv[]=/usr/bin/onedrive --monitor --confdir=/real/mailbox ; ignore_errors=no ; }"
+)
+assert module.confdir_from_exec_start(decoy) == "/real/mailbox"
+assert module.confdir_from_exec_start(
+  "{ path=/usr/bin/onedrive ; argv[]=/usr/bin/onedrive --monitor ; ignore_errors=no ; }"
+) == ""
+
+assert module.valid_confdir("/home/user/.config/onedrive")
+assert not module.valid_confdir("relative/onedrive")
+assert not module.valid_confdir("/etc/../etc/onedrive")
+assert not module.valid_confdir("/tmp/onedrive\n--resync")
+ACCOUNTS_PY
+
 # --- --confdir selects the account -------------------------------------------
 
 alt_confdir="$test_home/.config/onedrive-accounts/work"
@@ -420,4 +552,4 @@ if grep -v 'omarchy-launch-terminal' "$root/Service.qml" \
   exit 1
 fi
 
-echo "Status tests passed (local state, timed pause, remote opt-in, cache, permissions, login, --confdir and control boundaries)"
+echo "Status tests passed (local state, timed pause, remote opt-in, cache, permissions, login, multi-account discovery, --confdir and control boundaries)"

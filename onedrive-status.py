@@ -230,6 +230,145 @@ def resume_timer_state():
   return next_usec // 1_000_000 if next_usec > 0 else 0
 
 
+# "onedrive.service" or "onedrive@<instance>.service"; the bare template
+# "onedrive@.service" deliberately does not match — it is not an account.
+ONEDRIVE_UNIT_PATTERN = re.compile(r"onedrive(?:@(?P<instance>[^@/]+))?\.service")
+
+# systemd renders ExecStart as
+#   { path=/usr/bin/onedrive ; argv[]=/usr/bin/onedrive --monitor --confdir=/x ; ... }
+# and the confdir must be read out of argv[], never out of path= or the unit name.
+EXEC_ARGV_PATTERN = re.compile(r"argv\[\]=(?P<argv>.*?)\s+;")
+
+
+def confdir_from_argv(argv):
+  tokens = str(argv).split()
+  for index, token in enumerate(tokens):
+    if token.startswith("--confdir="):
+      return token[len("--confdir="):].strip().strip('"').strip("'")
+    if token == "--confdir" and index + 1 < len(tokens):
+      return tokens[index + 1].strip().strip('"').strip("'")
+  return ""
+
+
+def confdir_from_exec_start(value):
+  matched = False
+  for match in EXEC_ARGV_PATTERN.finditer(value):
+    matched = True
+    confdir = confdir_from_argv(match.group("argv"))
+    if confdir:
+      return confdir
+  # Some systemd versions print a bare command line instead of the argv[] form.
+  return "" if matched else confdir_from_argv(value)
+
+
+def unit_search_dirs():
+  config_home = os.environ.get("XDG_CONFIG_HOME")
+  base = Path(config_home) if config_home else Path.home() / ".config"
+  data_home = os.environ.get("XDG_DATA_HOME")
+  data_base = Path(data_home) if data_home else Path.home() / ".local" / "share"
+  return [
+    base / "systemd" / "user",
+    data_base / "systemd" / "user",
+    Path("/etc/systemd/user"),
+    Path("/usr/lib/systemd/user"),
+    Path("/lib/systemd/user"),
+  ]
+
+
+def wants_unit_names():
+  # "list-units" only reports units systemd currently has loaded, so an instance
+  # that is enabled but has never been started (or was garbage-collected while
+  # inactive) is invisible there. Its enablement symlink is not, and
+  # "list-unit-files" never expands template instances, so the symlinks are the
+  # only way to see it.
+  names = []
+  for directory in unit_search_dirs():
+    for pattern in ("*.wants/onedrive*.service", "*.requires/onedrive*.service"):
+      try:
+        for link in directory.glob(pattern):
+          names.append(link.name)
+      except OSError:
+        continue
+  return names
+
+
+def onedrive_unit_names():
+  names = []
+  exit_code, output = systemctl_value([
+    "list-units",
+    "onedrive*",
+    "--all",
+    "--no-legend",
+    "--plain",
+    "--no-pager",
+  ])
+  if exit_code == 0:
+    for line in output.splitlines():
+      fields = line.split()
+      if fields:
+        names.append(fields[0])
+  names.extend(wants_unit_names())
+  ordered = []
+  for name in names:
+    if name not in ordered and ONEDRIVE_UNIT_PATTERN.fullmatch(name):
+      ordered.append(name)
+  return ordered
+
+
+def account_entry(unit):
+  exit_code, output = systemctl_value([
+    "show",
+    unit,
+    "--property=ExecStart,Description,LoadState",
+    "--no-pager",
+  ])
+  if exit_code != 0:
+    return None
+  description = ""
+  load_state = ""
+  confdir = ""
+  for line in output.splitlines():
+    key, separator, value = line.partition("=")
+    if not separator:
+      continue
+    if key == "Description" and not description:
+      description = value.strip()
+    elif key == "LoadState" and not load_state:
+      load_state = value.strip()
+    elif key == "ExecStart" and not confdir:
+      confdir = confdir_from_exec_start(value)
+  if load_state == "not-found":
+    return None
+  match = ONEDRIVE_UNIT_PATTERN.fullmatch(unit)
+  return {
+    "service": unit,
+    "instance": match.group("instance") or "" if match else "",
+    "confdir": confdir if valid_confdir(confdir) else str(default_confdir()),
+    "description": description or "OneDrive",
+  }
+
+
+def discover_accounts():
+  accounts = []
+  seen = set()
+  for unit in onedrive_unit_names():
+    entry = account_entry(unit)
+    if entry and entry["service"] not in seen:
+      seen.add(entry["service"])
+      accounts.append(entry)
+  if not accounts:
+    # No systemd, no systemctl, or nothing enabled: degrade to the single
+    # default account so callers still get a usable list.
+    return [{
+      "service": DEFAULT_SERVICE,
+      "instance": "",
+      "confdir": str(default_confdir()),
+      "description": "OneDrive",
+    }]
+  accounts.sort(key=lambda row: (row["instance"] != "", row["instance"]))
+  return accounts
+
+
 TRANSFER_SKIP_PREFIXES = ("changes", "differences", "new items", "items", "advertised")
 
 # Multi-line CLI error blocks: "ERROR: ..." then indented detail lines.
@@ -736,7 +875,15 @@ def main():
   parser.add_argument("--limit", type=int, default=20, help="number of recent local files")
   parser.add_argument("--service", default=DEFAULT_SERVICE, help="systemd user service name")
   parser.add_argument("--confdir", default=None, help="OneDrive config directory for this account")
+  parser.add_argument(
+    "--list-accounts",
+    action="store_true",
+    help="print the accounts configured on this machine as JSON and exit",
+  )
   args = parser.parse_args()
+  if args.list_accounts:
+    print(json.dumps(discover_accounts(), separators=(",", ":")))
+    return
   args.limit = max(5, min(50, args.limit))
   if not re.fullmatch(r"[A-Za-z0-9_.@-]+\.service", args.service):
     parser.error("invalid service name")
