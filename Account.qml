@@ -20,9 +20,15 @@ Item {
 
   readonly property string displayName: Model.accountName(instance, description)
   readonly property string resumeUnit: Commands.resumeUnit(instance)
-  // True once a status poll has landed. Until then this account contributes no
-  // state to the aggregate, so default values cannot flash a wrong badge.
+  // True once a status poll has produced a usable sample. Until then this
+  // account contributes no state to the aggregate, so default values cannot
+  // flash a wrong badge.
   property bool initialized: false
+  // True once a poll has been ATTEMPTED, whatever its outcome. An account whose
+  // helper always fails is never `initialized`, so this is what "the first round
+  // is over" must be measured with -- otherwise one broken account either
+  // freezes the aggregate forever or defeats the startup notification hold.
+  property bool attempted: false
 
   property var settings: ({})
   property var coordinator: null
@@ -42,6 +48,10 @@ Item {
   readonly property bool active: _desired === -1
     ? (running || activeState === "activating") : _desired === 1
   property bool refreshing: false
+  // Distinct from `refreshing`: only a ROUTINE poll occupies the coordinator's
+  // one-at-a-time slot. A 30s cloud check must not freeze every account's
+  // routine polling.
+  readonly property bool routinePolling: refreshing && _activeCloudMode === ""
   property string statusText: "Checking…"
   property string syncDir: ""
   property string syncMode: "Two-way"
@@ -179,9 +189,12 @@ Item {
   signal openPanelRequested(string service)
   signal pollFinished(string service)
   signal transition(var event)
-  // Emitted whenever a poll changes anything the aggregate depends on, so the
-  // coordinator can invalidate its worst-of-N without polling every account.
-  signal stateChanged()
+  // NOT named stateChanged: QQuickItem already has that as the NOTIFY signal for
+  // `state`, so declaring it is an invalid override -- Qt warns once per account
+  // per start and Item.state loses its change notification. qmllint does not
+  // catch it. The design doc named it stateChanged; this is a deliberate
+  // deviation.
+  signal accountStateChanged()
 
   // Transitions are reported, not delivered. The coordinator batches whatever
   // arrives in one polling burst into at most one desktop notification, so three
@@ -245,7 +258,7 @@ Item {
     // lets an account contribute to the aggregate, and opening it early would
     // publish default values as if they were a reading.
     initialized = true
-    stateChanged()
+    accountStateChanged()
 
     if (resyncRequired && !wasResync)
       report("resync", "OneDrive needs a resync", "Resync required",
@@ -307,16 +320,19 @@ Item {
   function pauseFor(minutes) {
     var requested = parseInt(String(minutes), 10)
     if (!isFinite(requested) || requested <= 0) return
-    // No derivable resume unit means no timer can be scheduled for this account;
-    // an untimed pause is honest, a timer that collides with another account is
-    // not.
-    if (resumeUnit === "") {
-      pause()
-      return
-    }
     var duration = Math.max(5, Math.min(1440, requested))
     if (!installed || !serviceAvailable || !authenticated || busy
         || serviceFailed || resyncRequired || reauthRequired) return
+    // No derivable resume unit means no timer can be scheduled for this account.
+    // An untimed pause is honest; a timer that collides with another account is
+    // not. Say so, or the user gets an indefinite pause from a button labelled
+    // "4 hours".
+    if (resumeUnit === "") {
+      actionStatus = "Paused — no resume timer is available for this account"
+      actionStatusTimer.restart()
+      pause()
+      return
+    }
     _pauseMinutes = duration
     cancelResumeTimer("pause")
   }
@@ -347,11 +363,39 @@ Item {
   }
 
   function cancelResumeTimer(afterAction) {
+    if (resumeUnit === "") {
+      // Nothing to cancel, and "systemctl stop .timer .service" is not a command
+      // worth sending. Continue straight to the action the cancel precedes.
+      _afterTimerCancel = afterAction
+      Qt.callLater(function() { root.afterResumeTimerCancelled() })
+      return
+    }
     _afterTimerCancel = afterAction
     _timerOutput = ""
     _timerError = ""
     cancelTimerProcess.command = Commands.cancelResume(resumeUnit)
     cancelTimerProcess.running = true
+  }
+
+  // Shared by the cancel process and by the no-timer path, which has nothing to
+  // cancel but must still perform the action the cancel precedes.
+  function afterResumeTimerCancelled() {
+    var action = _afterTimerCancel
+    _afterTimerCancel = ""
+    resumeAt = 0
+    if (action === "resume") {
+      runControl(Commands.control("start", root.service), 1)
+    } else if (action === "pause") {
+      if (running || active || activeState === "activating") {
+        runControl(Commands.control("stop", root.service), 0)
+      } else if (_pauseMinutes > 0) {
+        var minutes = _pauseMinutes
+        _pauseMinutes = 0
+        scheduleResume(minutes)
+      } else {
+        refresh(false)
+      }
+    }
   }
 
   function scheduleResume(minutes) {
@@ -380,11 +424,6 @@ Item {
   // share one budget instead of each polling every refreshIntervalSec. The
   // timers that remain are per-account control flow -- settling after a control
   // command, and clearing transient action text.
-
-  // True while this account is still ramping up at startup: the coordinator
-  // gives it priority slots until it reports running, or the ramp gives up.
-  property int rampTicks: 0
-  readonly property bool ramping: rampTicks < 15 && !running
 
   Timer {
     id: delayedRefresh
@@ -433,6 +472,7 @@ Item {
     onExited: function(exitCode) {
       var cloudMode = root._activeCloudMode
       root.refreshing = false
+      root.attempted = true
       var stdout = String(statusStdout.text || root._statusOutput || "")
       var stderr = String(statusStderr.text || root._statusError || "")
       if (exitCode === 0) root.applyStatus(stdout)
@@ -449,7 +489,10 @@ Item {
       if (root._cloudRequested !== "") {
         var requested = root._cloudRequested
         root._cloudRequested = ""
-        Qt.callLater(function() { root.startCloudCheck(requested) })
+        // Back through the coordinator, not straight into startCloudCheck:
+        // going direct released the shared slot and then took it again without
+        // asking, which let a second account start its own check in between.
+        Qt.callLater(function() { root.requestCloud(requested) })
       }
       if (root._quotaRetryQueued) {
         root._quotaRetryQueued = false
@@ -465,24 +508,7 @@ Item {
     command: []
     stdout: StdioCollector { waitForEnd: true }
     stderr: StdioCollector { waitForEnd: true }
-    onExited: function(exitCode) {
-      var action = root._afterTimerCancel
-      root._afterTimerCancel = ""
-      root.resumeAt = 0
-      if (action === "resume") {
-        root.runControl(Commands.control("start", root.service), 1)
-      } else if (action === "pause") {
-        if (root.running || root.active || root.activeState === "activating") {
-          root.runControl(Commands.control("stop", root.service), 0)
-        } else if (root._pauseMinutes > 0) {
-          var minutes = root._pauseMinutes
-          root._pauseMinutes = 0
-          root.scheduleResume(minutes)
-        } else {
-          root.refresh(false)
-        }
-      }
-    }
+    onExited: function(exitCode) { root.afterResumeTimerCancelled() }
   }
 
   Process {

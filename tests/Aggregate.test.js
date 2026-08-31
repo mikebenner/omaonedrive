@@ -129,15 +129,34 @@ test("equal ranks resolve by discovery order, not by name", () => {
 
 test("an uninitialized account never contributes a state", () => {
   // Default property values would classify as "missing"; flashing that badge
-  // before the first poll is the failure this guards.
+  // before the first poll is the failure this guards. But an account that has
+  // not reported must be EXCLUDED, not allowed to gate the whole aggregate --
+  // see the freeze test below.
   const accounts = [
-    account({ instance: "a" }),
+    account({ instance: "a", reauthRequired: true }),
     { initialized: false, instance: "b", installed: false, authenticated: false }
   ]
   const summary = Model.aggregateAccounts(accounts)
-  assert.equal(summary.kind, "checking")
-  assert.equal(summary.initialized, false)
   assert.notEqual(summary.kind, "missing")
+  // The account that HAS reported still drives the badge.
+  assert.equal(summary.kind, "reauth")
+  assert.equal(summary.worst.instance, "a")
+})
+
+test("one account that can never initialize does not freeze the bar", () => {
+  // A unit whose confdir is unreadable makes the helper exit non-zero on every
+  // poll, so that account's `initialized` is never set. Gating the aggregate on
+  // ALL accounts meant the bar sat at "checking" forever -- no badge, undimmed
+  // icon -- while another account was resync-required and invisible.
+  const accounts = [
+    { initialized: false, instance: "broken" },
+    account({ instance: "ok", resyncRequired: true })
+  ]
+  const summary = Model.aggregateAccounts(accounts)
+  assert.equal(summary.kind, "resync")
+  assert.equal(summary.initialized, true)
+  // ...and only when NOTHING has reported is it still checking.
+  assert.equal(Model.aggregateAccounts([{ initialized: false }]).kind, "checking")
 })
 
 test("an empty account list is checking, not missing", () => {
@@ -179,9 +198,17 @@ test("a large installation cannot grow an unbounded tooltip", () => {
   assert.equal(lines[lines.length - 1], "+4 more")
 })
 
-test("a partially-initialized set says it is still checking", () => {
-  const accounts = [account({ instance: "a" }), { initialized: false, instance: "b" }]
-  assert.equal(Model.aggregateTooltip(accounts, Date.now()), "Checking 2 OneDrive accounts…")
+test("the tooltip is checking only while nothing has reported", () => {
+  const nothing = [{ initialized: false, instance: "a" }, { initialized: false, instance: "b" }]
+  assert.equal(Model.aggregateTooltip(nothing, Date.now()), "Checking 2 OneDrive accounts…")
+
+  // Once any account has reported, the tooltip says what it knows rather than
+  // hiding it behind a permanent "checking".
+  const partial = [account({ instance: "a", statusText: "Monitoring" }),
+                   { initialized: false, instance: "b" }]
+  const text = Model.aggregateTooltip(partial, Date.now())
+  assert.ok(text.startsWith("OneDrive · 2 accounts"), text)
+  assert.ok(text.includes("A: Monitoring"), text)
 })
 
 test("every state maps onto the existing badge vocabulary", () => {

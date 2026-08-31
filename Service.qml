@@ -34,6 +34,18 @@ Item {
     return Model.aggregateAccounts(accounts)
   }
 
+  // Every account has been polled at least once, whatever the outcome. Distinct
+  // from aggregate.initialized, which asks whether any account produced a usable
+  // sample: an account whose helper always fails is attempted but never
+  // initialized, and the startup hold has to end for it.
+  readonly property bool allAttempted: {
+    void(_aggregateRevision)
+    for (var index = 0; index < accounts.length; index++) {
+      if (!accounts[index].attempted) return false
+    }
+    return accounts.length > 0
+  }
+
   readonly property bool notificationsEnabled: {
     var value = setting("notifications", true)
     return value === true || String(value).toLowerCase() === "true"
@@ -68,7 +80,9 @@ Item {
     var found = accountForService(service)
     if (!found) return
     selectedService = found.service
-    found.refresh(false)
+    // Through the shared slot, not around it: clicking through N tabs quickly
+    // would otherwise start N concurrent helpers.
+    if (!routinePollRunning()) found.refresh(false)
     found.retryStaleQuotaOnOpen()
   }
 
@@ -149,32 +163,21 @@ Item {
   // cost one subprocess per slot rather than N at once.
   function routinePollRunning() {
     for (var index = 0; index < _accountObjects.length; index++) {
-      if (_accountObjects[index].refreshing) return true
+      if (_accountObjects[index].routinePolling) return true
     }
     return false
   }
 
-  // Accounts still ramping up at startup get the next slot ahead of the
-  // round-robin, which preserves the old startup ramp without giving every
-  // account its own two-second timer.
+  // An account that has not reported yet takes priority, but the cursor still
+  // advances, so several unreported accounts interleave instead of the first one
+  // taking every slot until it gives up. Priority is "has not reported"
+  // (!initialized), not "not running": a deliberately paused account is a known
+  // state and must not consume startup slots at all.
   function nextAccountToPoll() {
-    if (_accountObjects.length === 0) return null
-    for (var ramp = 0; ramp < _accountObjects.length; ramp++) {
-      var candidate = _accountObjects[ramp]
-      if (candidate.ramping && !candidate.refreshing) {
-        candidate.rampTicks += 1
-        return candidate
-      }
-    }
-    for (var step = 0; step < _accountObjects.length; step++) {
-      var index = (_pollCursor + step) % _accountObjects.length
-      var account = _accountObjects[index]
-      if (!account.refreshing) {
-        _pollCursor = (index + 1) % _accountObjects.length
-        return account
-      }
-    }
-    return null
+    var index = Model.nextPollIndex(_accountObjects, _pollCursor)
+    if (index < 0) return null
+    _pollCursor = (index + 1) % _accountObjects.length
+    return _accountObjects[index]
   }
 
   function pollNextAccount() {
@@ -191,11 +194,11 @@ Item {
   property var _cloudQueue: []
 
   function requestCloud(account, mode) {
-    if (!account || mode === "") return
-    if (cloudBusyAccount() !== null) {
-      for (var index = 0; index < _cloudQueue.length; index++) {
-        if (_cloudQueue[index].service === account.service && _cloudQueue[index].mode === mode) return
-      }
+    if (!account) return
+    var decision = Model.cloudDecision(
+      cloudBusyAccount() !== null, _cloudQueue, account.service, mode)
+    if (decision === "drop") return
+    if (decision === "queue") {
       var next = _cloudQueue.slice()
       next.push({ service: account.service, mode: mode })
       _cloudQueue = next
@@ -236,7 +239,11 @@ Item {
     var next = _pendingEvents.slice()
     next.push(event)
     _pendingEvents = next
-    burstTimer.restart()
+    // start(), not restart(): restarting on every event made the window mean
+    // "900ms of quiet", which a staggered scheduler never produces, so each
+    // account's events flushed separately. The window now runs from the FIRST
+    // event of a batch and is long enough to span one poll round.
+    if (!burstTimer.running) burstTimer.start()
   }
 
   function flushTransitions() {
@@ -254,15 +261,17 @@ Item {
     // click is read back from its stdout. A second one waits rather than losing
     // its action.
     if (notifyProcess.running) {
-      var queued = _actionQueue.slice()
-      queued.push(composed)
-      _actionQueue = queued
+      // An action-bearing notify-send blocks until the popup is dismissed, and a
+      // critical popup does not expire on its own. Queueing behind it meant a
+      // single unread alert hid every later one, possibly for hours. Show this
+      // one without its click action instead -- which is what the widget did
+      // before the broker existed.
+      Quickshell.execDetached(Commands.notify(composed.urgency, composed.summary, composed.body))
       return
     }
     startActionNotification(composed)
   }
 
-  property var _actionQueue: []
   property string _notifyBehavior: ""
   property string _notifyService: ""
 
@@ -312,7 +321,12 @@ Item {
   readonly property var files: selectedAccount ? selectedAccount.files : []
   readonly property var activity: selectedAccount ? selectedAccount.activity : []
   readonly property string actionStatus: selectedAccount ? selectedAccount.actionStatus : ""
-  readonly property string lastError: selectedAccount ? selectedAccount.lastError : discoveryError
+  // A discovery failure is non-destructive, but the user should still learn the
+  // account list may be stale; the account's own error takes precedence.
+  readonly property string lastError: {
+    if (selectedAccount && selectedAccount.lastError !== "") return selectedAccount.lastError
+    return discoveryError
+  }
   readonly property bool busy: selectedAccount ? selectedAccount.busy : false
   readonly property bool cloudChecking: selectedAccount ? selectedAccount.cloudChecking : false
   readonly property bool quotaChecking: selectedAccount ? selectedAccount.quotaChecking : false
@@ -357,7 +371,7 @@ Item {
       description: model.description
       settings: root.settings
       coordinator: root
-      onStateChanged: root._aggregateRevision++
+      onAccountStateChanged: root._aggregateRevision++
       onOpenPanelRequested: root.openPanelRequested()
       onPollFinished: root.cloudFinished()
       onTransition: function(event) { root.enqueueTransition(event) }
@@ -372,10 +386,21 @@ Item {
   Timer {
     id: burstTimer
     property int heldRounds: 0
-    interval: 900
+    // One poll round, because that is how long it takes every account to be
+    // sampled once and therefore how long a related set of transitions takes to
+    // arrive. A single account has nothing to wait for and keeps the short
+    // window, so its notifications are as prompt as they were before.
+    interval: root.accountCount > 1
+      ? Math.max(900, Math.min(30000, root.refreshIntervalSec * 1000))
+      : 900
     repeat: false
     onTriggered: {
-      if (!root.aggregate.initialized && !root._baselineSent && heldRounds < 12) {
+      // Hold the window open until the first round is over, so a startup round of
+      // pre-existing problems becomes ONE baseline notification rather than N.
+      // Gated on allAttempted, not aggregate.initialized: the latter flips as
+      // soon as the FIRST account reports, which released the hold immediately
+      // and produced one popup per account -- exactly what this prevents.
+      if (!root.allAttempted && !root._baselineSent && heldRounds < 12) {
         heldRounds += 1
         burstTimer.restart()
         return
@@ -400,12 +425,6 @@ Item {
       var service = root._notifyService
       root._notifyBehavior = ""
       root._notifyService = ""
-      if (root._actionQueue.length > 0) {
-        var queued = root._actionQueue.slice()
-        var next = queued.shift()
-        root._actionQueue = queued
-        Qt.callLater(function() { root.startActionNotification(next) })
-      }
       if (String(notifyStdout.text || "").trim() !== "default") return
       if (behavior === "open") {
         // Select the account the notification was about before opening.
@@ -432,14 +451,23 @@ Item {
         if (descriptors.count === 0) root.applyDiscovery([root.defaultDescriptor()])
         return
       }
-      root.discoveryError = ""
-      var rows = []
+      var rows = null
       try {
-        var parsed = JSON.parse(String(discoveryStdout.text || "[]"))
+        var parsed = JSON.parse(String(discoveryStdout.text || ""))
         if (Array.isArray(parsed)) rows = parsed
       } catch (error) {
-        rows = []
+        rows = null
       }
+      if (rows === null) {
+        // Unparseable output is "could not look", not "found nothing". Treating
+        // it as an empty result would remove every account -- more destructive
+        // than a non-zero exit, which is handled above -- and it would repeat on
+        // every discovery tick.
+        root.discoveryError = "Could not read the account list"
+        if (descriptors.count === 0) root.applyDiscovery([root.defaultDescriptor()])
+        return
+      }
+      root.discoveryError = ""
       if (rows.length === 0) rows = [root.defaultDescriptor()]
       root.applyDiscovery(rows)
     }
@@ -455,6 +483,27 @@ Item {
     running: true
     triggeredOnStart: true
     onTriggered: root.pollNextAccount()
+  }
+
+  // The old widget ran a dedicated two-second ramp alongside the poll timer, so
+  // a service coming up at login was noticed within ~2s. Reordering slots does
+  // not reproduce that -- with one account the slot IS the refresh interval --
+  // so the fast ramp is a timer of its own again, running only until every
+  // account has reported.
+  Timer {
+    id: startupRamp
+    property int ticks: 0
+    interval: 2000
+    repeat: true
+    // Until every account has been polled once -- not until one succeeds, which
+    // would leave the rest without ramp coverage, and not forever, which is what
+    // an always-failing helper would otherwise get. The old widget capped its
+    // ramp at 15 ticks; so does this.
+    running: root.accountCount > 0 && !root.allAttempted && ticks < 15 * Math.max(1, root.accountCount)
+    onTriggered: {
+      ticks += 1
+      root.pollNextAccount()
+    }
   }
 
   // Units can be enabled or removed while the widget runs.

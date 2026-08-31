@@ -954,7 +954,10 @@ Panel {
     signal activated()
     function keyboardActivate() { activated() }
 
-    readonly property string stateKind: account
+    // No glyph until this account has reported: its default values would
+    // otherwise render as the missing-client mark, which is the same drift the
+    // bar's checking gate exists to prevent.
+    readonly property string stateKind: account && account.initialized
       ? Model.badgeKind(Model.accountStateKind(account)) : ""
 
     foreground: root.foreground

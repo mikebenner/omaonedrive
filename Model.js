@@ -311,16 +311,20 @@ function aggregateAccounts(accounts) {
   if (list.length === 0) {
     return { kind: "checking", rank: 0, count: 0, worst: null, anyActive: false, initialized: false }
   }
-  var initialized = true
+  // Accounts that have not reported yet are EXCLUDED rather than gating the
+  // whole aggregate. Excluding them already prevents default property values
+  // from flashing a missing-client badge, which is the reason the design gives
+  // for the checking state -- while gating on all of them meant a single
+  // permanently-failing account (its confdir unreadable, say) froze the bar at
+  // "checking" forever, hiding a resync-required account behind it.
+  var anyInitialized = false
   var worst = null
   var worstRank = Number.MAX_VALUE
   var anyActive = false
   for (var index = 0; index < list.length; index++) {
     var account = list[index]
-    if (!account || account.initialized !== true) {
-      initialized = false
-      continue
-    }
+    if (!account || account.initialized !== true) continue
+    anyInitialized = true
     var state = accountState(account)
     // Strictly less-than, so equal ranks keep discovery order.
     if (state.rank < worstRank) {
@@ -335,7 +339,7 @@ function aggregateAccounts(accounts) {
       : (account.running === true || String(account.activeState || "") === "activating")
     if (isActive || account.syncing === true) anyActive = true
   }
-  if (!initialized || worst === null) {
+  if (!anyInitialized || worst === null) {
     return { kind: "checking", rank: 0, count: list.length, worst: null, anyActive: anyActive, initialized: false }
   }
   return {
@@ -358,7 +362,14 @@ function aggregateTooltip(accounts, nowMs, maxLines) {
   var summary = aggregateAccounts(list)
   if (!summary.initialized) return "Checking " + list.length + " OneDrive accounts…"
 
-  var ordered = list.slice().map(function (account, index) {
+  // Only accounts that have reported. An un-polled account still carries default
+  // values, which classify as "missing" and would sort to the TOP of a
+  // worst-first list -- so the tooltip would announce a missing client while the
+  // badge, which already excludes them, showed nothing.
+  var reported = list.filter(function (account) {
+    return account && account.initialized === true
+  })
+  var ordered = reported.map(function (account, index) {
     return { account: account, index: index, rank: accountState(account).rank }
   })
   ordered.sort(function (left, right) {
@@ -367,6 +378,9 @@ function aggregateTooltip(accounts, nowMs, maxLines) {
 
   var cap = maxLines === undefined ? 5 : maxLines
   var lines = ["OneDrive · " + list.length + " accounts"]
+  if (reported.length < list.length) {
+    lines.push("Checking " + (list.length - reported.length) + " more…")
+  }
   for (var index = 0; index < ordered.length && index < cap; index++) {
     var account = ordered[index].account
     lines.push(accountName(account.instance, account.description) + ": " + tooltip(account, nowMs))
@@ -421,18 +435,32 @@ function composeNotification(events, multiAccount) {
     }
   }
   if (attention.length > 0) {
-    // Several at once, or mixed with other kinds: one grouped popup that names
-    // each account, and a click opens the worst one rather than acting blindly.
     var worst = attention.slice().sort(function (left, right) {
       return ATTENTION_KINDS[left.kind] - ATTENTION_KINDS[right.kind]
     })[0]
+    var others = attention.concat(recovered, storage)
+    // With one account every event is about that account, so "needs attention in
+    // 2 accounts" would be nonsense. Lead with the worst condition and keep its
+    // own action -- which is how a single account behaved before this work.
+    if (!multiAccount) {
+      return {
+        urgency: "critical",
+        summary: worst.summary,
+        body: others.length > 1
+          ? others.map(function (event) { return event.short }).join("\n")
+          : worst.body,
+        action: worst.action || "open",
+        actionLabel: worst.actionLabel || "Open OneDrive panel",
+        service: worst.service
+      }
+    }
     if (attention.length === 1) {
       return {
         urgency: "critical",
-        summary: multiAccount ? worst.summary + " — " + worst.name : worst.summary,
-        body: attention.concat(recovered, storage).map(function (event) {
-          return event.name + ": " + event.short
-        }).join("\n"),
+        summary: worst.summary + " — " + worst.name,
+        body: others.map(function (event) { return event.name + ": " + event.short }).join("\n"),
+        // A grouped popup deliberately does not carry a direct repair action: it
+        // cannot know which account the reader meant.
         action: "open",
         actionLabel: "Open OneDrive panel",
         service: worst.service
@@ -448,11 +476,25 @@ function composeNotification(events, multiAccount) {
     }
   }
   if (storage.length > 0) {
-    if (storage.length === 1) {
+    // A recovery in the same burst is reported in the body rather than dropped;
+    // the previous code returned the storage popup alone.
+    if (storage.length === 1 && recovered.length === 0) {
       return {
         urgency: "normal",
         summary: multiAccount ? storage[0].summary + " — " + storage[0].name : storage[0].summary,
         body: storage[0].body,
+        action: "",
+        actionLabel: "",
+        service: storage[0].service
+      }
+    }
+    if (storage.length === 1) {
+      return {
+        urgency: "normal",
+        summary: multiAccount ? storage[0].summary + " — " + storage[0].name : storage[0].summary,
+        body: storage.concat(recovered).map(function (event) {
+          return multiAccount ? event.name + ": " + event.short : event.short
+        }).join("\n"),
         action: "",
         actionLabel: "",
         service: storage[0].service
@@ -496,6 +538,47 @@ function badgeGlyph(kind) {
   if (kind === "syncing") return "\u{f0453}"
   if (kind === "attention") return "\u{f002a}"
   return ""
+}
+
+// --- scheduling decisions -----------------------------------------------------
+//
+// These are pure so they can be tested. The QML that calls them cannot be, and a
+// reviewer's observation is the reason they exist here: "the suite is green;
+// that is not evidence these paths work". Deleting the ramp or bypassing the
+// semaphore used to pass every test.
+
+// Which account should take the next poll slot? Returns an index, or -1.
+// `accounts` is [{ routinePolling, initialized }]. Accounts that have not
+// reported yet take priority, but the cursor still advances, so several
+// unreported accounts interleave rather than the first one taking every slot.
+function nextPollIndex(accounts, cursor) {
+  var list = Array.isArray(accounts) ? accounts : []
+  if (list.length === 0) return -1
+  var start = ((cursor % list.length) + list.length) % list.length
+  for (var pass = 0; pass < 2; pass++) {
+    for (var step = 0; step < list.length; step++) {
+      var index = (start + step) % list.length
+      var account = list[index]
+      if (!account || account.routinePolling === true) continue
+      if (pass === 0 && account.initialized === true) continue
+      return index
+    }
+  }
+  return -1
+}
+
+// May this cloud request start now, and if not, should it be queued?
+// Returns "start" | "queue" | "drop".
+function cloudDecision(busy, queue, service, mode) {
+  if (!service || !mode) return "drop"
+  if (busy) {
+    var pending = Array.isArray(queue) ? queue : []
+    for (var index = 0; index < pending.length; index++) {
+      if (pending[index].service === service && pending[index].mode === mode) return "drop"
+    }
+    return "queue"
+  }
+  return "start"
 }
 
 // Decide how to bring the current descriptor list in line with what discovery
@@ -566,6 +649,8 @@ if (typeof module !== "undefined") {
     composeNotification: composeNotification,
     badgeKind: badgeKind,
     badgeGlyph: badgeGlyph,
+    nextPollIndex: nextPollIndex,
+    cloudDecision: cloudDecision,
     reconcilePlan: reconcilePlan,
     filePath: filePath
   }

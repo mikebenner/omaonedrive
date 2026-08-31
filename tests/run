@@ -6,7 +6,8 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 node --test "$root/tests/Model.test.js" "$root/tests/IpcLifecycle.test.js" \
   "$root/tests/Commands.test.js" "$root/tests/Aggregate.test.js" \
-  "$root/tests/Discovery.test.js" "$root/tests/Notifications.test.js"
+  "$root/tests/Discovery.test.js" "$root/tests/Notifications.test.js" \
+  "$root/tests/Scheduler.test.js"
 python3 "$root/tests/Journal.test.py"
 "$root/tests/Status.test.sh"
 
