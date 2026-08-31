@@ -28,6 +28,33 @@ that account's own timer and no other's, that an account discovered by
 unusable confdir is dropped rather than aliased onto the default account, and
 that the no-flag JSON output keeps exactly its expected field set.
 
+The QML layer's pure logic is covered by node tests: `tests/Commands.test.js`
+asserts every command vector as an exact array for both a plain service and a
+template instance, `tests/Aggregate.test.js` covers all ten account states and
+the worst-of-N rules, `tests/Discovery.test.js` covers reconciling discovery
+results without churning delegates, and `tests/Notifications.test.js` covers
+grouping a burst of events into one notification.
+
+## Multiple accounts, by hand
+
+With a plain `onedrive.service` only, the panel must be pixel-identical to the
+single-account screenshots: no selector row, no extra spacing, hero title
+`OneDrive`.
+
+With template instances (`onedrive@a`, `onedrive@b`, …):
+
+- each account appears once in the selector, named from its instance;
+- switching accounts changes the hero, storage, activity and every control,
+  returns the scroll to the top, and leaves keyboard navigation working;
+- pausing one account for 15 minutes leaves the others running, and its timer
+  resumes only that account;
+- one account failing while another syncs shows the attention badge while the
+  cloud icon stays lit;
+- removing the selected unit and waiting for rediscovery falls back to the
+  first remaining account rather than emptying the panel;
+- restarting the shell with an active timed pause still shows the pending
+  resume for the right account.
+
 ## In the shell
 
 Use an Omarchy Quattro VM with no host block device attached:

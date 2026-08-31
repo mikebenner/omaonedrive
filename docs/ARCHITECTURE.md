@@ -5,17 +5,31 @@
 `Panel.qml`, which follows Omarchy's native popup ownership, keyboard, theme,
 and panel-switch contracts.
 
-`Service.qml` is the asynchronous boundary between QML and the operating
-system. Local polling, cloud checks, and systemd control each run in a
-`Quickshell.Io.Process`; no command is constructed through a shell.
-Timed pauses stop `onedrive.service` and schedule the transient
-`omaonedrive-resume.timer` through `systemd-run --user`. That is today's
-single-account behaviour: the helper accepts a different resume unit per account
-through `--resume-unit`, which the current QML does not yet pass, just as it does
-not yet pass `--service`, `--confdir` or `--list-accounts`. Replacing a preset or
-resuming immediately first cancels that timer. If scheduling fails after the
-service was stopped, the service is started again so a failed timer cannot
-leave sync paused unexpectedly.
+`Service.qml` is the coordinator and `Account.qml` is the asynchronous boundary
+between QML and the operating system. One `Account` exists per discovered
+account, each owning its own status, control and timer processes; local polling,
+cloud checks, and systemd control each run in a `Quickshell.Io.Process`. No
+command is constructed through a shell: every argv vector is built by
+`Commands.js` from that account's own service, config directory and resume unit,
+and `tests/Commands.test.js` asserts the exact arrays.
+
+`Service.qml` discovers accounts with the helper's `--list-accounts`, reconciles
+the result by the stable service key so existing delegates and their
+notification history survive, dispatches one local poll per scheduler slot
+(`refreshIntervalSec` divided by the account count, so the total poll rate does
+not grow with the number of accounts), serialises explicit cloud checks behind a
+semaphore of one, and batches transition events into at most one desktop
+notification per polling burst. With no template instances, discovery yields the
+plain `onedrive.service` and everything below behaves as it did when the widget
+was single-account.
+
+Timed pauses stop that account's service and schedule its own transient resume
+unit through `systemd-run --user` — `omaonedrive-resume` for the plain service,
+`omaonedrive-resume@<instance>` for a template instance, so an in-flight timer
+survives an upgrade and one account's pause never cancels another's. Replacing a
+preset or resuming immediately first cancels only that account's timer. If
+scheduling fails after the service was stopped, that same service is started
+again so a failed timer cannot leave sync paused unexpectedly.
 
 `onedrive-status.py` reads:
 
@@ -97,3 +111,14 @@ No refresh-token content, Microsoft response URL, access token, browser state,
 or synced-file content crosses the helper boundary; the only additional data
 `--list-accounts` emits is each unit's name, the instance parsed out of that
 name, its systemd description, and its config-directory path.
+
+The bar shows one state for all accounts: each is classified into exactly one of
+ten states and the worst wins, with the cloud icon lit while any account is
+still working. Until every discovered account has produced a first sample the
+aggregate is `checking` and no badge is drawn, so default values cannot flash a
+missing-client badge at startup. The tooltip is the account's own single line
+when there is one account, and an attributed worst-first list when there are
+several. `Model.js` holds the classification, aggregation, tooltip, badge and
+notification-composition rules as pure functions, table-tested in
+`tests/Aggregate.test.js`, `tests/Discovery.test.js` and
+`tests/Notifications.test.js`.
