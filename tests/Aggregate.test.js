@@ -49,6 +49,25 @@ test("every state in the total order is reachable and ranked worst-first", () =>
   assert.deepEqual(ranks, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
 })
 
+test("the order holds when several conditions are true at once", () => {
+  // The table above uses one condition per case, which cannot detect a swapped
+  // pair. These fixtures set BOTH conditions of each adjacent pair, so the
+  // winner is decided by precedence alone.
+  const pairs = [
+    [{ resyncRequired: true, reauthRequired: true }, "resync"],
+    [{ reauthRequired: true, serviceFailed: true }, "reauth"],
+    [{ serviceFailed: true, installed: false }, "failed"],
+    [{ installed: false, authenticated: false }, "missing"],
+    [{ authenticated: false, serviceAvailable: false }, "login"],
+    [{ serviceAvailable: false, running: false, activeState: "inactive" }, "unavailable"],
+    [{ running: false, activeState: "inactive", syncing: true }, "paused"],
+    [{ activeState: "activating", running: false, syncing: true }, "starting"]
+  ]
+  for (const [overrides, expected] of pairs) {
+    assert.equal(Model.accountStateKind(account(overrides)), expected, JSON.stringify(overrides))
+  }
+})
+
 test("a required resync outranks the failure it also sets", () => {
   // Exit 126 sets both; "Resync required" is the actionable half.
   assert.equal(Model.accountStateKind(account({ resyncRequired: true, serviceFailed: true })), "resync")
@@ -66,8 +85,30 @@ test("the worst account wins, and the cloud stays lit while any account is activ
   assert.equal(summary.kind, "reauth")
   assert.equal(summary.count, 3)
   assert.equal(summary.worst.instance, "dragones")
-  // Personal is still syncing, so the main icon must not dim.
   assert.equal(summary.anyActive, true)
+})
+
+test("only a genuinely working account lights the icon", () => {
+  // Discriminating: nothing here is running, so the ONLY thing that can light
+  // the icon is the syncing account. Drop the syncing clause from
+  // aggregateAccounts and this fails.
+  const stopped = { running: false, active: false, activeState: "inactive" }
+  const syncingOnly = [
+    account(Object.assign({ instance: "a", reauthRequired: true }, stopped)),
+    account(Object.assign({ instance: "b", syncing: true }, stopped))
+  ]
+  assert.equal(Model.aggregateAccounts(syncingOnly).anyActive, true)
+
+  const noneWorking = [
+    account(Object.assign({ instance: "a", reauthRequired: true }, stopped)),
+    account(Object.assign({ instance: "b" }, stopped))
+  ]
+  assert.equal(Model.aggregateAccounts(noneWorking).anyActive, false)
+
+  // An account that is running but was just paused reports active:false, and
+  // the icon must dim immediately rather than waiting for the next poll.
+  const justPaused = [account({ instance: "a", running: true, active: false })]
+  assert.equal(Model.aggregateAccounts(justPaused).anyActive, false)
 })
 
 test("all accounts idle means the icon dims", () => {

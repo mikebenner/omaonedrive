@@ -25,9 +25,39 @@ test("resume units are collision-free and keep the legacy name for the plain ser
   assert.equal(Commands.resumeUnit(""), "omaonedrive-resume")
   assert.equal(Commands.resumeUnit("dragones"), "omaonedrive-resume@dragones")
   assert.equal(Commands.resumeUnit("personal"), "omaonedrive-resume@personal")
-  // Distinct instances can never collide on one unit name.
+  // Distinct instances can never collide on one unit name -- and the set has to
+  // include the shapes that can actually collide, not just well-behaved ones.
   const units = ["", "dragones", "personal", "tandera"].map(Commands.resumeUnit)
   assert.equal(new Set(units).size, units.length)
+})
+
+test("an instance that cannot yield a safe timer yields none at all", () => {
+  // systemd-run reads a --unit value ending in a unit suffix as THAT unit, so
+  // instance "foo.timer" would derive the same timer as instance "foo" and one
+  // account could cancel the other's pause. Refusing to derive is the safe
+  // answer; the caller falls back to an untimed pause.
+  assert.equal(Commands.resumeUnit("foo.timer"), "")
+  assert.equal(Commands.resumeUnit("foo.service"), "")
+  // ...and the collision it prevents:
+  assert.notEqual(Commands.resumeUnit("foo"), Commands.resumeUnit("foo.timer"))
+
+  // The derived timer must fit systemd's 255-byte unit-name limit.
+  assert.equal(Commands.resumeUnit("x".repeat(231)), "")
+  assert.ok(Commands.resumeUnit("x".repeat(200)).length + ".timer".length <= 255)
+
+  // Every derived timer name, across shapes, is unique or empty.
+  const derived = ["", "foo", "foo.timer", "foo.service", "bar", "x".repeat(231)]
+    .map(Commands.resumeUnit).filter(unit => unit !== "")
+  assert.equal(new Set(derived).size, derived.length)
+})
+
+test("a status command omits a resume unit it could not derive", () => {
+  // Passing nothing is right: the helper then reports no resume time, rather
+  // than one belonging to a different account.
+  const command = Commands.status("/p/h.py",
+    { service: "onedrive@foo.timer.service", instance: "foo.timer", confdir: "/c" }, 20)
+  assert.ok(!command.includes("--resume-unit"), command.join(" "))
+  assert.ok(!command.includes(""), command.join(" "))
 })
 
 test("control vectors name the account's own service", () => {
@@ -98,13 +128,15 @@ test("the status command is account-complete", () => {
     Commands.resumeUnit(DRAGONES.instance))
 })
 
-test("cloud modes add exactly one flag and never both", () => {
-  const quota = Commands.status("/p/h.py", PLAIN, 5, "quota")
-  const sync = Commands.status("/p/h.py", PLAIN, 5, "sync-status")
-  assert.ok(quota.includes("--quota") && !quota.includes("--sync-status"))
-  assert.ok(sync.includes("--sync-status") && !sync.includes("--quota"))
-  const local = Commands.status("/p/h.py", PLAIN, 5)
-  assert.ok(!local.includes("--quota") && !local.includes("--sync-status"))
+test("cloud modes add exactly one flag, in the right place", () => {
+  // Exact vectors, not membership: a stray extra flag would make a quota
+  // refresh also run the slow full-drive check, and membership cannot see that.
+  const base = ["python3", "/p/h.py", "--confdir", PLAIN.confdir, "--limit", "5"]
+  assert.deepEqual(Commands.status("/p/h.py", PLAIN, 5), base)
+  assert.deepEqual(Commands.status("/p/h.py", PLAIN, 5, "quota"), base.concat(["--quota"]))
+  assert.deepEqual(Commands.status("/p/h.py", PLAIN, 5, "sync-status"), base.concat(["--sync-status"]))
+  // An unknown mode adds nothing rather than guessing.
+  assert.deepEqual(Commands.status("/p/h.py", PLAIN, 5, "nonsense"), base)
 })
 
 test("a timed pause cancels and schedules only its own account", () => {
@@ -162,7 +194,37 @@ test("--resync appears only in the interactive terminal vector", () => {
     assert.ok(!joined.includes("--resync"), joined)
     assert.ok(!joined.includes("--logout"), joined)
   }
-  assert.ok(Commands.login(DRAGONES.confdir, "resync")[0] === "omarchy-launch-terminal")
+  // ...and it must actually BE there. Without this, deleting the push in
+  // Commands.login leaves the test green while Repair silently stops repairing.
+  const repair = Commands.login(DRAGONES.confdir, "resync")
+  assert.equal(repair[0], "omarchy-launch-terminal")
+  assert.ok(repair.includes("--resync"), repair.join(" "))
+  assert.ok(repair.includes("--sync"), repair.join(" "))
+})
+
+test("only the interactive vector may carry a mutating token", () => {
+  // Token-level, not substring: the old shell grep banned a bare --sync as well
+  // as --resync and --logout, and "--sync-status" must not false-positive. A new
+  // builder that leaked one of these would otherwise pass every other check.
+  const FORBIDDEN = ["--sync", "--resync", "--logout", "--reauth"]
+  const nonInteractive = {
+    status: Commands.status("/p/h.py", DRAGONES, 20),
+    statusQuota: Commands.status("/p/h.py", DRAGONES, 20, "quota"),
+    statusSync: Commands.status("/p/h.py", DRAGONES, 20, "sync-status"),
+    listAccounts: Commands.listAccounts("/p/h.py"),
+    controlStart: Commands.control("start", DRAGONES.service),
+    controlStop: Commands.control("stop", DRAGONES.service),
+    cancelResume: Commands.cancelResume("omaonedrive-resume@dragones"),
+    scheduleResume: Commands.scheduleResume("omaonedrive-resume@dragones", DRAGONES.service, 15),
+    notify: Commands.notify("normal", "s", "b")
+  }
+  for (const [name, vector] of Object.entries(nonInteractive)) {
+    for (const token of vector) {
+      assert.ok(!FORBIDDEN.includes(token), name + " leaked " + token)
+    }
+  }
+  // --sync-status is a distinct token and must survive the check above.
+  assert.ok(nonInteractive.statusSync.includes("--sync-status"))
 })
 
 test("no builder ever produces a shell invocation", () => {

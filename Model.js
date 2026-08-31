@@ -327,10 +327,13 @@ function aggregateAccounts(accounts) {
       worstRank = state.rank
       worst = account
     }
-    if (account.running === true || String(account.activeState || "") === "activating"
-        || account.syncing === true) {
-      anyActive = true
-    }
+    // account.active already folds in the optimistic _desired state, so a just-
+    // pressed Pause dims the icon immediately instead of waiting for a poll.
+    // Fall back to the raw fields for plain objects that have no `active`.
+    var isActive = account.active !== undefined
+      ? account.active === true
+      : (account.running === true || String(account.activeState || "") === "activating")
+    if (isActive || account.syncing === true) anyActive = true
   }
   if (!initialized || worst === null) {
     return { kind: "checking", rank: 0, count: list.length, worst: null, anyActive: anyActive, initialized: false }
@@ -351,10 +354,7 @@ function aggregateAccounts(accounts) {
 function aggregateTooltip(accounts, nowMs, maxLines) {
   var list = Array.isArray(accounts) ? accounts : []
   if (list.length === 0) return "Checking OneDrive…"
-  if (list.length === 1) {
-    return list[0] && list[0].initialized === true
-      ? tooltip(list[0], nowMs) : "Checking OneDrive…"
-  }
+  if (list.length === 1) return tooltip(list[0], nowMs)
   var summary = aggregateAccounts(list)
   if (!summary.initialized) return "Checking " + list.length + " OneDrive accounts…"
 

@@ -15,9 +15,22 @@ var DEFAULT_RESUME_UNIT = "omaonedrive-resume"
 
 // The plain service deliberately keeps the legacy unit name, so a timer that is
 // already in flight survives an upgrade and stays visible and cancellable.
+//
+// Returns "" when no usable resume unit can be derived. The caller degrades to
+// an untimed pause rather than scheduling a timer that would collide with
+// another account's or that systemd would refuse.
 function resumeUnit(instance) {
   var value = String(instance || "")
-  return value === "" ? DEFAULT_RESUME_UNIT : DEFAULT_RESUME_UNIT + "@" + value
+  if (value === "") return DEFAULT_RESUME_UNIT
+  // systemd-run reads a --unit value ending in a unit suffix as THAT unit, so
+  // instance "foo.timer" would derive the same timer as instance "foo" -- and
+  // cancelling it would target "…foo.timer.timer", which does not exist,
+  // stranding the other account's pause.
+  if (value.endsWith(".timer") || value.endsWith(".service")) return ""
+  var unit = DEFAULT_RESUME_UNIT + "@" + value
+  // The derived timer name must still fit systemd's unit-name limit.
+  if (unit.length + ".timer".length > 255) return ""
+  return unit
 }
 
 // The status call is account-complete: every invocation names the service, the
@@ -36,7 +49,8 @@ function status(helperPath, account, recentFileLimit, mode) {
     command.push("--service", service)
   }
   if (confdir !== "") command.push("--confdir", confdir)
-  if (instance !== "") command.push("--resume-unit", resumeUnit(instance))
+  var unit = instance === "" ? "" : resumeUnit(instance)
+  if (unit !== "") command.push("--resume-unit", unit)
   command.push("--limit", String(recentFileLimit))
   if (mode === "quota") command.push("--quota")
   else if (mode === "sync-status") command.push("--sync-status")

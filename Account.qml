@@ -205,7 +205,6 @@ Item {
       lastError = parsed.lastError || "Failed to read OneDrive status"
       return
     }
-    initialized = true
     var wasFailed = serviceFailed
     var wasResync = resyncRequired
     var wasReauth = reauthRequired
@@ -242,6 +241,10 @@ Item {
     files = parsed.files || []
     activity = parsed.activity || []
     lastError = String(parsed.lastError || "")
+    // Last, and only once the whole snapshot is applied: this is the gate that
+    // lets an account contribute to the aggregate, and opening it early would
+    // publish default values as if they were a reading.
+    initialized = true
     stateChanged()
 
     if (resyncRequired && !wasResync)
@@ -304,6 +307,13 @@ Item {
   function pauseFor(minutes) {
     var requested = parseInt(String(minutes), 10)
     if (!isFinite(requested) || requested <= 0) return
+    // No derivable resume unit means no timer can be scheduled for this account;
+    // an untimed pause is honest, a timer that collides with another account is
+    // not.
+    if (resumeUnit === "") {
+      pause()
+      return
+    }
     var duration = Math.max(5, Math.min(1440, requested))
     if (!installed || !serviceAvailable || !authenticated || busy
         || serviceFailed || resyncRequired || reauthRequired) return
