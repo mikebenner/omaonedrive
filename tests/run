@@ -21,8 +21,10 @@ if [ -x "$qml_runner" ]; then
   # zero and the harness can never fail the suite -- which is exactly what it did
   # until a reviewer caught it.
   qml_output=$(mktemp)
-  QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 \
-    "$qml_runner" -I "$root/tests/qmlstubs" "$root/tests/qml/Harness.qml" >"$qml_output" 2>&1
+  # ulimit -c 0: a Qt tool that cannot initialise a platform plugin aborts,
+  # and a core dump per test run is noise in the user's journal.
+  ( ulimit -c 0; QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 \
+    "$qml_runner" -I "$root/tests/qmlstubs" "$root/tests/qml/Harness.qml" >"$qml_output" 2>&1 )
   qml_status=$?
   grep -v 'propertyCache\|Gtk-WARNING\|cannot open display' "$qml_output" || true
   rm -f -- "$qml_output"

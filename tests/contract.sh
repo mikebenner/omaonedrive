@@ -20,8 +20,8 @@ src = src.replace('property string discoveryJson: "[]"',
 open(sys.argv[2], "w").write(src)
 PY
 
-commands=$(QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 \
-  "$qml_runner" -I "$root/tests/qmlstubs" "$harness" 2>&1 | sed -n 's/^qml: CMD //p')
+commands=$( ( ulimit -c 0; QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 \
+  "$qml_runner" -I "$root/tests/qmlstubs" "$harness" 2>&1 ) | sed -n 's/^qml: CMD //p')
 [ -n "$commands" ] || { echo "Contract check FAILED: the QML produced no commands" >&2; exit 1; }
 
 count=0
