@@ -48,6 +48,23 @@ test("interactive flows carry the account's own confdir", () => {
     ["omarchy-launch-terminal", "onedrive", "--confdir", DRAGONES.confdir, "--sync", "--resync"])
 })
 
+test("the plain account sends exactly today's command", () => {
+  // Before discovery supplies an identity, and for the plain service afterwards,
+  // the helper's own defaults ARE the single-account behaviour. Sending the
+  // default service or an empty confdir explicitly would be noise at best and,
+  // for an empty confdir, rejected by the helper's absolute-path rule.
+  assert.deepEqual(
+    Commands.status("/p/h.py", { service: "onedrive.service", instance: "", confdir: "" }, 20),
+    ["python3", "/p/h.py", "--limit", "20"])
+  assert.deepEqual(
+    Commands.status("/p/h.py", {}, 20),
+    ["python3", "/p/h.py", "--limit", "20"])
+  // ...but a discovered plain account still passes its real confdir.
+  assert.deepEqual(
+    Commands.status("/p/h.py", PLAIN, 20),
+    ["python3", "/p/h.py", "--confdir", PLAIN.confdir, "--limit", "20"])
+})
+
 test("the status command is account-complete", () => {
   const command = Commands.status("/p/onedrive-status.py", DRAGONES, 20)
   assert.deepEqual(command, [

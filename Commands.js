@@ -25,13 +25,19 @@ function resumeUnit(instance) {
 // different account. `mode` is "" for the routine local poll, or "quota" /
 // "sync-status" for an explicit cloud check.
 function status(helperPath, account, recentFileLimit, mode) {
-  var command = [
-    "python3", String(helperPath),
-    "--service", String(account.service),
-    "--confdir", String(account.confdir),
-    "--resume-unit", resumeUnit(account.instance),
-    "--limit", String(recentFileLimit)
-  ]
+  var command = ["python3", String(helperPath)]
+  // An empty value means "unspecified", not "empty string": the helper's own
+  // defaults are the single-account behaviour, so before discovery has supplied
+  // an identity this produces exactly the command the widget sends today.
+  var service = String(account.service || "")
+  var confdir = String(account.confdir || "")
+  var instance = String(account.instance || "")
+  if (service !== "" && service !== DEFAULT_SERVICE) {
+    command.push("--service", service)
+  }
+  if (confdir !== "") command.push("--confdir", confdir)
+  if (instance !== "") command.push("--resume-unit", resumeUnit(instance))
+  command.push("--limit", String(recentFileLimit))
   if (mode === "quota") command.push("--quota")
   else if (mode === "sync-status") command.push("--sync-status")
   return command

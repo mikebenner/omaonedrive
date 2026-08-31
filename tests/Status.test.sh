@@ -936,26 +936,28 @@ if python3 "$root/onedrive-status.py" --list-accounts '--service=-Mguest.service
   exit 1
 fi
 
-grep -Fq '["systemctl", "--user", "stop", "onedrive.service"]' "$root/Service.qml"
-grep -Fq '["systemctl", "--user", "start", "onedrive.service"]' "$root/Service.qml"
-grep -Fq '["omarchy-launch-terminal", "onedrive"]' "$root/Service.qml"
-grep -Fq '["omarchy-launch-terminal", "onedrive", "--reauth"]' "$root/Service.qml"
-grep -Fq '["omarchy-launch-terminal", "onedrive", "--sync", "--resync"]' "$root/Service.qml"
-grep -Fq '"notify-send"' "$root/Service.qml"
+# The command vectors themselves are asserted as exact arrays, with injected
+# account identity, in tests/Commands.test.js. Greping the QML for hard-coded
+# unit names is what those tests replace: a per-account vector has no fixed
+# string to grep for, and re-pinning one account's spelling here would only
+# assert that the multi-account work had not happened.
 grep -Fq 'retryStaleQuotaOnOpen' "$root/Panel.qml"
 grep -Fq '(oneDrive.syncing ? "Syncing" : (oneDrive.active ? "Monitoring" : "Paused"))' "$root/Panel.qml"
-grep -Fq 'command.push("--quota")' "$root/Service.qml"
-grep -Fq 'command.push("--sync-status")' "$root/Service.qml"
-grep -Fq '"--unit=" + resumeUnit' "$root/Service.qml"
-grep -Fq '"--on-active=" + String(minutes) + "m"' "$root/Service.qml"
-grep -Fq '"/usr/bin/systemctl", "--user", "start", "onedrive.service"' "$root/Service.qml"
+
 # Resync may only ever run interactively through omarchy-launch-terminal (the
 # CLI prompts for confirmation there); every direct or scripted mutation stays
-# forbidden.
-if grep -v 'omarchy-launch-terminal' "$root/Service.qml" \
-  | grep -Eq 'bash.*-c|--resync|--logout|--sync([^a-z-]|$)'; then
-  echo "service boundary includes an unsafe OneDrive mutation" >&2
-  exit 1
-fi
+# forbidden. The QML must now contain NO mutating flag at all, because every
+# command vector is built in Commands.js. Commands.js itself is deliberately not
+# line-scanned -- it builds arrays across several lines, which a line-based grep
+# cannot reason about -- and is instead covered behaviourally by the
+# "--resync appears only in the interactive terminal vector" test in
+# tests/Commands.test.js, which exercises every builder and inspects its output.
+for boundary_file in Service.qml Account.qml Panel.qml BarWidget.qml; do
+  if grep -v 'omarchy-launch-terminal' "$root/$boundary_file" \
+    | grep -Eq 'bash.*-c|--resync|--logout|--sync([^a-z-]|$)'; then
+    echo "service boundary includes an unsafe OneDrive mutation: $boundary_file" >&2
+    exit 1
+  fi
+done
 
 echo "Status tests passed (local state, timed pause, remote opt-in, cache, permissions, login, multi-account discovery, --confdir and control boundaries)"
