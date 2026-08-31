@@ -8,6 +8,22 @@ node --test "$root/tests/Model.test.js" "$root/tests/IpcLifecycle.test.js" \
   "$root/tests/Commands.test.js" "$root/tests/Aggregate.test.js" \
   "$root/tests/Discovery.test.js" "$root/tests/Notifications.test.js" \
   "$root/tests/Scheduler.test.js"
+
+# Executes the real Service.qml and Account.qml against stub Quickshell types.
+# Skipped rather than failed where qml6 is unavailable, so the suite still runs
+# on a machine without Qt tooling -- but it is the only coverage of the
+# scheduler, the cloud semaphore, discovery reconciliation and the per-account
+# command vectors, so a skip is worth noticing.
+qml_runner=$(command -v qml6 || echo /usr/lib/qt6/bin/qml)
+if [ -x "$qml_runner" ]; then
+  QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 \
+    "$qml_runner" -I "$root/tests/qmlstubs" "$root/tests/qml/Harness.qml" 2>&1 \
+    | grep -v 'propertyCache\|Gtk-WARNING\|cannot open display' || true
+  qml_status=${PIPESTATUS[0]}
+  [ "$qml_status" -eq 0 ] || { echo "QML harness failed" >&2; exit 1; }
+else
+  echo "QML harness SKIPPED (no qml6 on PATH)" >&2
+fi
 python3 "$root/tests/Journal.test.py"
 "$root/tests/Status.test.sh"
 
