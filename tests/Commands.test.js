@@ -41,9 +41,16 @@ test("an instance that cannot yield a safe timer yields none at all", () => {
   // ...and the collision it prevents:
   assert.notEqual(Commands.resumeUnit("foo"), Commands.resumeUnit("foo.timer"))
 
-  // The derived timer must fit systemd's 255-byte unit-name limit.
+  // The derived name must fit systemd's 255-byte limit -- and systemd-run creates
+  // BOTH a .timer and a .service, so the LONGER suffix is the binding one.
+  // These two lengths are the band where the two rules disagree: checking only
+  // ".timer" accepted them, and the account was then stopped by a pause whose
+  // timer could not be scheduled.
+  assert.equal(Commands.resumeUnit("x".repeat(229)), "", "229 must be refused (.service overflows)")
   assert.equal(Commands.resumeUnit("x".repeat(231)), "")
-  assert.ok(Commands.resumeUnit("x".repeat(200)).length + ".timer".length <= 255)
+  const longest = Commands.resumeUnit("x".repeat(228))
+  assert.notEqual(longest, "", "228 must still be accepted")
+  assert.ok(longest.length + ".service".length <= 255)
 
   // Every derived timer name, across shapes, is unique or empty.
   const derived = ["", "foo", "foo.timer", "foo.service", "bar", "x".repeat(231)]

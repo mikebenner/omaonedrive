@@ -31,8 +31,27 @@ test("an unchanged set is all updates and no churn", () => {
   const plan = Model.reconcilePlan(current, [DRAGONES, PERSONAL, TANDERA])
   assert.equal(plan.appends.length, 0)
   assert.equal(plan.removes.length, 0)
-  assert.equal(plan.updates.length, 3)
-  assert.deepEqual(plan.updates.map(u => u.index), [0, 1, 2])
+  // deepEqual on the ROW, not just the index. Pinning only the index let every
+  // update carry the same row, which would give every account the first
+  // account's confdir -- they would all poll and display one drive.
+  assert.deepEqual(plan.updates, [
+    { index: 0, row: DRAGONES },
+    { index: 1, row: PERSONAL },
+    { index: 2, row: TANDERA }
+  ])
+})
+
+test("each update carries its OWN row, not a neighbour's", () => {
+  // Reordered discovery: the rows must still pair with the right descriptors.
+  const current = [DRAGONES.service, PERSONAL.service, TANDERA.service]
+  const plan = Model.reconcilePlan(current, [TANDERA, DRAGONES, PERSONAL])
+  const byIndex = {}
+  for (const update of plan.updates) byIndex[update.index] = update.row.service
+  assert.deepEqual(byIndex, {
+    0: DRAGONES.service,
+    1: PERSONAL.service,
+    2: TANDERA.service
+  })
 })
 
 test("a changed confdir updates in place rather than replacing the account", () => {

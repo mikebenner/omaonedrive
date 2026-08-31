@@ -67,17 +67,32 @@ test("three accounts failing at once produce ONE grouped popup", () => {
   assert.ok(grouped.body.includes("Tandera:"))
 })
 
-test("a grouped popup opens the WORST account, not the first", () => {
-  // resync outranks failed outranks reauth, and the click must land on the one
-  // that most needs a human.
-  const grouped = Model.composeNotification([
+test("a grouped popup opens the WORST account, wherever it sits", () => {
+  // The previous fixture had the worst account LAST, so "open the last one"
+  // passed it. The worst must be found by rank, from any position.
+  const worstLast = Model.composeNotification([
     event("reauth", "Dragones"), event("resync", "Tandera")
   ], true)
-  assert.equal(grouped.service, "onedrive@tandera.service")
-  assert.equal(grouped.action, "open")
-  // A grouped popup must NOT carry a direct repair action: it cannot know which
-  // account the reader means.
-  assert.notEqual(grouped.action, "repair")
+  assert.equal(worstLast.service, "onedrive@tandera.service")
+
+  const worstFirst = Model.composeNotification([
+    event("resync", "Tandera"), event("reauth", "Dragones")
+  ], true)
+  assert.equal(worstFirst.service, "onedrive@tandera.service")
+
+  const worstMiddle = Model.composeNotification([
+    event("failed", "A"), event("resync", "Middle"), event("reauth", "C")
+  ], true)
+  assert.equal(worstMiddle.service, "onedrive@middle.service")
+
+  // The notification's ranking must agree with the bar's: reauth outranks
+  // failed, so a reauth account wins over a failed one.
+  const order = Model.composeNotification([
+    event("failed", "Failed"), event("reauth", "Reauth")
+  ], true)
+  assert.equal(order.service, "onedrive@reauth.service")
+
+  assert.equal(worstLast.action, "open")
 })
 
 test("several recoveries collapse into one", () => {
@@ -89,13 +104,17 @@ test("several recoveries collapse into one", () => {
   assert.equal(recovered.action, "")
 })
 
-test("attention outranks recovery in the same burst", () => {
+test("attention outranks recovery in the same burst, and names its account", () => {
   const mixed = Model.composeNotification([
     event("recovered", "Personal"), event("reauth", "Dragones")
   ], true)
   assert.equal(mixed.urgency, "critical")
   assert.ok(mixed.summary.includes("reauthentication"))
-  // The recovery is still reported, in the body.
+  // Attribution is asserted in THIS branch too. It was previously pinned only in
+  // the lone-attention branch, so dropping the name here stayed green -- and a
+  // three-account user would be told "OneDrive needs reauthentication" with no
+  // idea which account.
+  assert.ok(mixed.summary.includes("Dragones"), mixed.summary)
   assert.ok(mixed.body.includes("Personal"))
 })
 
@@ -109,21 +128,31 @@ test("storage alone stays a normal-urgency notification", () => {
   assert.equal(many.summary, "2 OneDrive accounts are almost full")
 })
 
-test("a burst never yields more than one notification", () => {
-  // The property that matters: whatever arrives in one polling burst, exactly
-  // one popup comes out.
-  const bursts = [
-    [event("reauth", "A")],
-    [event("reauth", "A"), event("failed", "B")],
-    [event("recovered", "A"), event("recovered", "B"), event("recovered", "C")],
-    [event("storage", "A"), event("reauth", "B"), event("recovered", "C")],
-    [event("resync", "A"), event("resync", "B"), event("failed", "C"), event("storage", "D")]
-  ]
-  for (const burst of bursts) {
-    const result = Model.composeNotification(burst, true)
-    assert.ok(result && typeof result.summary === "string")
-    assert.equal(typeof result.body, "string")
+test("a burst reports every account it received, in one notification", () => {
+  // The old version of this test asserted only that a summary was a string.
+  // composeNotification returns one object by construction, so NO mutation could
+  // fail it. What actually matters is that nothing is DROPPED: a storage
+  // threshold is edge-latched, so an event omitted here is lost until it clears
+  // and re-arms.
+  const burst = [event("resync", "A"), event("failed", "B"),
+                 event("storage", "C"), event("recovered", "D")]
+  const composed = Model.composeNotification(burst, true)
+  assert.equal(typeof composed.summary, "string")
+  for (const name of ["A", "B", "C", "D"]) {
+    assert.ok(composed.body.includes(name + ":"), name + " missing from: " + composed.body)
   }
+})
+
+test("the grouped count is accounts, not events", () => {
+  // One account with two conditions is one account. Counting events produced
+  // "OneDrive needs attention in 2 accounts" for a single-account machine.
+  const sameAccount = [
+    Object.assign(event("resync", "Solo"), { service: "onedrive.service" }),
+    Object.assign(event("reauth", "Solo"), { service: "onedrive.service" })
+  ]
+  assert.ok(!Model.composeNotification(sameAccount, true).summary.includes("2 accounts"))
+  const twoAccounts = [event("resync", "A"), event("reauth", "B")]
+  assert.ok(Model.composeNotification(twoAccounts, true).summary.includes("2 accounts"))
 })
 
 test("a startup round of pre-existing problems is one baseline popup", () => {

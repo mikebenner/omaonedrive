@@ -68,6 +68,16 @@ test("the order holds when several conditions are true at once", () => {
   }
 })
 
+test("a just-pressed pause beats a stale syncing flag", () => {
+  // `active` folds in the optimistic desired state. Without it the badge lagged
+  // a poll in both directions, and a syncing flag left over from before the
+  // pause outranked the pause itself.
+  assert.equal(Model.accountStateKind(account({ running: true, active: false })), "paused")
+  assert.equal(Model.accountStateKind(account({ running: true, active: false, syncing: true })), "paused")
+  // ...and resuming is equally immediate.
+  assert.equal(Model.accountStateKind(account({ running: false, active: true, activeState: "inactive" })), "healthy")
+})
+
 test("a required resync outranks the failure it also sets", () => {
   // Exit 126 sets both; "Resync required" is the actionable half.
   assert.equal(Model.accountStateKind(account({ resyncRequired: true, serviceFailed: true })), "resync")
@@ -198,6 +208,19 @@ test("a large installation cannot grow an unbounded tooltip", () => {
   assert.equal(lines[lines.length - 1], "+4 more")
 })
 
+test("the cap keeps the accounts that need a human, not an arbitrary five", () => {
+  // Nine healthy accounts plus one that needs reauth, with the unhealthy one
+  // LAST in discovery order. A cap that simply took the first five in discovery
+  // order -- or the last five -- would hide it behind "+N more".
+  const accounts = []
+  for (let index = 0; index < 9; index++) accounts.push(account({ instance: "ok" + index }))
+  accounts.push(account({ instance: "broken", reauthRequired: true,
+    statusText: "Reauthentication required" }))
+  const lines = Model.aggregateTooltip(accounts, Date.now()).split("\n")
+  assert.ok(lines[1].startsWith("Broken: Reauthentication required"), lines.join(" | "))
+  assert.equal(lines.length, 1 + 5 + 1)
+})
+
 test("the tooltip is checking only while nothing has reported", () => {
   const nothing = [{ initialized: false, instance: "a" }, { initialized: false, instance: "b" }]
   assert.equal(Model.aggregateTooltip(nothing, Date.now()), "Checking 2 OneDrive accounts…")
@@ -209,6 +232,13 @@ test("the tooltip is checking only while nothing has reported", () => {
   const text = Model.aggregateTooltip(partial, Date.now())
   assert.ok(text.startsWith("OneDrive · 2 accounts"), text)
   assert.ok(text.includes("A: Monitoring"), text)
+  // The un-polled account must NOT be listed. Its default values classify as
+  // "missing", which would sort it to the TOP of a worst-first list -- so the
+  // tooltip would lead with "OneDrive CLI is not installed" while the badge,
+  // which excludes it, showed nothing at all.
+  assert.ok(!text.includes("B:"), text)
+  assert.ok(!text.includes("not installed"), text)
+  assert.ok(text.includes("Checking 1 more"), text)
 })
 
 test("every state maps onto the existing badge vocabulary", () => {
@@ -237,22 +267,57 @@ test("no state is left without a badge decision", () => {
   }
 })
 
-test("a single account produces the same badge it does today", () => {
-  // Today's bar computes: !installed -> missing, !authenticated -> login,
-  // attention flags -> attention, syncing/starting -> syncing, !active -> paused.
-  const cases = [
-    [{ installed: false }, "missing"],
-    [{ authenticated: false }, "login"],
-    [{ serviceFailed: true }, "attention"],
-    [{ resyncRequired: true }, "attention"],
-    [{ reauthRequired: true }, "attention"],
-    [{ syncing: true }, "syncing"],
-    [{ activeState: "activating", running: false }, "syncing"],
-    [{ running: false, activeState: "inactive" }, "paused"],
-    [{}, ""]
-  ]
-  for (const [overrides, expected] of cases) {
-    const summary = Model.aggregateAccounts([account(overrides)])
-    assert.equal(Model.badgeKind(summary.kind), expected, JSON.stringify(overrides))
+// origin/main:BarWidget.qml's flat ternary, transcribed. The single-account
+// badge is compared against THIS over the whole flag space rather than against a
+// hand-picked list -- a list can only ever be a partial oracle, and the earlier
+// one omitted every combination where the two actually diverge.
+function legacyBadgeKind(a) {
+  const active = a.active !== undefined ? a.active : (a.running || a.activeState === "activating")
+  const attention = a.serviceFailed || a.resyncRequired || a.reauthRequired
+  if (!a.installed) return "missing"
+  if (!a.authenticated) return "login"
+  if (attention) return "attention"
+  if (a.syncing || a.activeState === "activating") return "syncing"
+  if (!active) return "paused"
+  return ""
+}
+
+test("the single-account badge is compared against the old ternary exhaustively", () => {
+  const flags = ["installed", "authenticated", "serviceAvailable", "running",
+    "serviceFailed", "resyncRequired", "reauthRequired", "syncing"]
+  const divergences = []
+  for (let mask = 0; mask < (1 << flags.length); mask++) {
+    for (const activeState of ["active", "activating", "inactive"]) {
+      const overrides = { activeState: activeState }
+      flags.forEach((flag, bit) => { overrides[flag] = Boolean(mask & (1 << bit)) })
+      overrides.active = overrides.running || activeState === "activating"
+      const mine = Model.badgeKind(Model.aggregateAccounts([account(overrides)]).kind)
+      const old = legacyBadgeKind(overrides)
+      if (mine !== old) divergences.push({ overrides, mine, old })
+    }
   }
+
+  // Every divergence must be one of the deliberate ones, named here with its
+  // reason. An unlisted divergence fails, which is the point.
+  const allowed = [
+    // The old ternary could not express "installed and signed in but the unit is
+    // not loaded"; it called that paused. `unavailable` is a distinct state and
+    // maps to the missing glyph, with the tooltip distinguishing them.
+    d => d.overrides.installed && d.overrides.authenticated && !d.overrides.serviceAvailable,
+    // The old ternary checked !authenticated before the attention flags, so a
+    // failing service on a signed-out account showed a login key. Attention
+    // outranks it now: a failure is the more actionable of the two.
+    d => !d.overrides.authenticated && (d.overrides.serviceFailed || d.overrides.resyncRequired
+      || d.overrides.reauthRequired),
+    // Likewise for a missing client with a failing unit.
+    d => !d.overrides.installed && (d.overrides.serviceFailed || d.overrides.resyncRequired
+      || d.overrides.reauthRequired),
+    // The old ternary let a stale `syncing` flag outrank a stopped service, so a
+    // just-pressed Pause kept a pulsing sync badge until the next poll. Pause
+    // wins now, which is what makes the button feel immediate.
+    d => d.overrides.syncing && !d.overrides.active && d.mine === "paused" && d.old === "syncing"
+  ]
+  const unexplained = divergences.filter(d => !allowed.some(rule => rule(d)))
+  assert.deepEqual(unexplained, [],
+    "undeclared badge divergence from origin/main: " + JSON.stringify(unexplained.slice(0, 3), null, 1))
 })

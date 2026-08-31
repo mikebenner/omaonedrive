@@ -290,7 +290,12 @@ function accountStateKind(account) {
   if (account.authenticated !== true) return "login"
   if (account.serviceAvailable !== true) return "unavailable"
   if (String(account.activeState || "") === "activating") return "starting"
-  if (account.running !== true) return "paused"
+  // `active` folds in the optimistic desired state, which is what made the old
+  // bar respond to Pause and Resume immediately instead of a poll later. Fall
+  // back to `running` for plain objects that have no `active`.
+  var isActive = account.active !== undefined ? account.active === true : account.running === true
+  if (!isActive) return "paused"
+  // ...and a syncing flag left over from before a pause must not outrank it.
   if (account.syncing === true) return "syncing"
   return "healthy"
 }
@@ -410,7 +415,9 @@ function badgeKind(kind) {
 //
 // An event is { service, name, kind, body, action } where kind is one of
 // "resync" | "failed" | "reauth" | "storage" | "recovered".
-var ATTENTION_KINDS = { resync: 1, failed: 2, reauth: 3 }
+// Must agree with ACCOUNT_STATES, or a grouped notification opens a different
+// account than the bar badge blames.
+var ATTENTION_KINDS = { resync: 1, reauth: 2, failed: 3 }
 
 function composeNotification(events, multiAccount) {
   var list = Array.isArray(events) ? events.filter(function (event) {
@@ -466,10 +473,18 @@ function composeNotification(events, multiAccount) {
         service: worst.service
       }
     }
+    // Count ACCOUNTS, not events: one account with two conditions is not two
+    // accounts. And carry the other kinds in the body -- a storage threshold is
+    // edge-latched, so dropping it here loses it until it clears and re-arms.
+    var names = {}
+    for (var scan = 0; scan < attention.length; scan++) names[attention[scan].service] = true
+    var accountCount = Object.keys(names).length
     return {
       urgency: "critical",
-      summary: "OneDrive needs attention in " + attention.length + " accounts",
-      body: attention.map(function (event) { return event.name + ": " + event.short }).join("\n"),
+      summary: accountCount > 1
+        ? "OneDrive needs attention in " + accountCount + " accounts"
+        : worst.summary + " — " + worst.name,
+      body: others.map(function (event) { return event.name + ": " + event.short }).join("\n"),
       action: "open",
       actionLabel: "Open OneDrive panel",
       service: worst.service

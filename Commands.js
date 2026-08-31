@@ -28,8 +28,10 @@ function resumeUnit(instance) {
   // stranding the other account's pause.
   if (value.endsWith(".timer") || value.endsWith(".service")) return ""
   var unit = DEFAULT_RESUME_UNIT + "@" + value
-  // The derived timer name must still fit systemd's unit-name limit.
-  if (unit.length + ".timer".length > 255) return ""
+  // systemd-run creates a .timer AND a .service, so the longer suffix is what
+  // has to fit. Checking only .timer let a 230-character instance stop the
+  // account and then fail to schedule its resume.
+  if (unit.length + ".service".length > 255) return ""
   return unit
 }
 
