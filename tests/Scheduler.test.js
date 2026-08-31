@@ -144,3 +144,17 @@ test("priority is 'not yet attempted', not 'not yet reported'", () => {
   assert.equal(Model.nextPollIndex(
     [acct({ attempted: true }), acct({ attempted: true, initialized: false })], 0), 0)
 })
+
+test("a request identical to the one already RUNNING is dropped", () => {
+  // Seeing only a busy boolean, the coordinator could not tell that the check in
+  // flight was already this exact (service, mode) -- so a repeat click queued a
+  // duplicate that ran the same 30-second query again the moment it finished.
+  const active = { service: "a.service", mode: "quota" }
+  assert.equal(Model.cloudDecision(true, [], "a.service", "quota", active), "drop")
+  // A different mode for the same account is still a real request.
+  assert.equal(Model.cloudDecision(true, [], "a.service", "sync-status", active), "queue")
+  // ...as is the same mode for another account.
+  assert.equal(Model.cloudDecision(true, [], "b.service", "quota", active), "queue")
+  // Without the active pair the old behaviour is unchanged.
+  assert.equal(Model.cloudDecision(true, [], "a.service", "quota"), "queue")
+})

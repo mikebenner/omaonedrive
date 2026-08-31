@@ -75,14 +75,16 @@ Item {
     return null
   }
 
-  function selectAccount(service) {
+  // `withQuotaRetry` is the panel's behaviour, not selection's: opening the
+  // panel onto a stale failed quota check retries it once. Automation selecting
+  // an account merely to target a control must not silently contact Microsoft,
+  // so IPC passes false.
+  function selectAccount(service, withQuotaRetry) {
     var found = accountForService(service)
     if (!found) return
     selectedService = found.service
-    // Through the shared slot, not around it: clicking through N tabs quickly
-    // would otherwise start N concurrent helpers.
     if (!routinePollRunning()) found.refresh(false)
-    found.retryStaleQuotaOnOpen()
+    if (withQuotaRetry !== false) found.retryStaleQuotaOnOpen()
   }
 
   // --- discovery ------------------------------------------------------------
@@ -222,8 +224,12 @@ Item {
 
   function requestCloud(account, mode) {
     if (!account) return
+    var busyAccount = cloudBusyAccount()
+    var active = busyAccount
+      ? { service: busyAccount.service, mode: busyAccount.activeCloudMode }
+      : null
     var decision = Model.cloudDecision(
-      cloudBusyAccount() !== null, _cloudQueue, account.service, mode)
+      busyAccount !== null, _cloudQueue, account.service, mode, active)
     if (decision === "drop") return
     if (decision === "queue") {
       var next = _cloudQueue.slice()
@@ -434,9 +440,10 @@ Item {
     // sampled once and therefore how long a related set of transitions takes to
     // arrive. A single account has nothing to wait for and keeps the short
     // window, so its notifications are as prompt as they were before.
-    interval: root.accountCount > 1
-      ? Math.max(900, Math.min(30000, root.refreshIntervalSec * 1000))
-      : 900
+    // A full poll round, uncapped: capping at 30s meant a 60-second refresh
+    // interval spread one round's events across two windows and produced two
+    // popups for the same round.
+    interval: root.accountCount > 1 ? Math.max(900, root.refreshIntervalSec * 1000) : 900
     repeat: false
     onTriggered: {
       // Hold the window open until the first round is over, so a startup round of

@@ -327,11 +327,30 @@ Item {
         var wrong = Quickshell.runningWith("onedrive@a.service").length
           + Quickshell.runningWith("onedrive.service").length
         harness.check(wrong === 0, "...and no other account's service is touched")
-        var live = Quickshell.running()
-        for (var w = 0; w < live.length; w++) live[w].finish(0, "")
+        // Finish the stop so the SCHEDULE is created. Snapshotting before this
+        // meant the systemd-run vector -- the one that decides which account
+        // actually resumes -- was never examined at all.
+        for (var w = 0; w < stops.length; w++) stops[w].finish(0, "")
       }
 
       else if (s === 17) {
+        var schedules = Quickshell.runningWith("systemd-run")
+        harness.check(schedules.length === 1, "a timed pause schedules exactly one resume")
+        var argv = schedules.length ? schedules[0].command : []
+        var joined = argv.join(" ")
+        harness.check(joined.indexOf("--unit=omaonedrive-resume@b") !== -1,
+          "the resume timer is that account's own unit")
+        harness.check(argv[argv.length - 1] === "onedrive@b.service",
+          "the timer starts the SAME service the pause stopped")
+        harness.check(joined.indexOf("onedrive.service ") === -1
+          && argv[argv.length - 1] !== "onedrive.service",
+          "...and not the default account's")
+        for (var y = 0; y < schedules.length; y++) schedules[y].finish(0, "")
+        var rest = Quickshell.running()
+        for (var z = 0; z < rest.length; z++) rest[z].finish(0, harness.statusPayload({}))
+      }
+
+      else if (s === 18) {
         console.log("a repointed confdir forgets the previous account's sample")
         var acct = svc.accounts[2]
         // Deliberately NOT assigning acct.confdir here: a direct assignment
@@ -351,9 +370,7 @@ Item {
           "...including syncDir, so Open folder cannot open the PREVIOUS directory")
       }
 
-      else if (s === 171) { /* placeholder, never reached */ }
-
-      else if (s === 18) {
+      else if (s === 19) {
         console.log("a reply from the previous confdir must not be applied")
         // The condition grok pointed out the earlier repoint test lacked: a poll
         // already IN FLIGHT when the account is repointed. forgetSample keeps
@@ -374,9 +391,11 @@ Item {
           "a reply started under the old confdir is discarded, not applied")
         harness.check(acct2.initialized === false,
           "...and does not resurrect `initialized` for the previous directory")
+        harness.check(acct2.attempted === false,
+          "...and does not mark the NEW identity attempted, which would skip its ramp")
       }
 
-      else if (s === 19) {
+      else if (s === 20) {
         console.log("every routine refresh goes through the shared slot")
         // Step 18 reduced the payload to one account; this needs two, so the
         // selected account can differ from the one being polled.
@@ -417,7 +436,7 @@ Item {
         }
       }
 
-      else if (s === 20) {
+      else if (s === 21) {
         console.log("a continuous stream of events must still flush")
         // The discriminating case. With burstTimer.restart() on every enqueue,
         // the window means "N ms of QUIET" -- so a stream of events arriving
@@ -432,7 +451,7 @@ Item {
         harness.streamTicks = 0
       }
 
-      else if (s >= 21 && s <= 42) {
+      else if (s >= 22 && s <= 43) {
         // One event per tick, faster than the 900ms window.
         svc.enqueueTransition({
           service: "onedrive@a.service", name: "A", kind: "reauth",
@@ -442,14 +461,14 @@ Item {
         harness.streamTicks += 1
       }
 
-      else if (s === 43) {
+      else if (s === 44) {
         var fired = Quickshell.detached.length + Quickshell.runningWith("notify-send").length
         harness.check(fired >= 1,
           "a stream of events flushes rather than being deferred forever (" +
           harness.streamTicks + " events over ~" + (harness.streamTicks * 60) + "ms)")
       }
 
-      else if (s >= 44) {
+      else if (s >= 45) {
         console.log(harness.failures === 0
           ? "QML harness: all checks passed"
           : "QML harness: " + harness.failures + " FAILED")

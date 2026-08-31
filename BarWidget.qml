@@ -30,8 +30,12 @@ BarWidget {
   // badge answers. Deriving it from the badge kind left the icon undimmed before
   // the first poll, and undimmed while showing the missing-client badge for an
   // account whose unit is merely unavailable.
+  // Dimming asks whether ANYTHING is usable, so it follows anyActive rather than
+  // the worst account's kind: one missing account must not dim a bar that has a
+  // healthy one syncing.
   readonly property bool installed: aggregate.initialized === true
-    && aggregate.kind !== "missing" && aggregate.kind !== "unavailable"
+    && (aggregate.anyActive === true
+        || (aggregate.kind !== "missing" && aggregate.kind !== "unavailable"))
   readonly property color iconColor: active
     ? (bar ? bar.barForeground : Color.foreground)
     : Qt.darker(bar ? bar.barForeground : Color.foreground, 1.55)
@@ -162,7 +166,7 @@ BarWidget {
       for (var index = 0; index < root.service.accounts.length; index++) {
         var account = root.service.accounts[index]
         if (account.service === target || (account.instance !== "" && account.instance === target)) {
-          root.service.selectAccount(account.service)
+          root.service.selectAccount(account.service, false)
           return "ok"
         }
       }

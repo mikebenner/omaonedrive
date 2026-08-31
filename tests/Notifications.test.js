@@ -150,7 +150,11 @@ test("the grouped count is accounts, not events", () => {
     Object.assign(event("resync", "Solo"), { service: "onedrive.service" }),
     Object.assign(event("reauth", "Solo"), { service: "onedrive.service" })
   ]
-  assert.ok(!Model.composeNotification(sameAccount, true).summary.includes("2 accounts"))
+  // Rejecting only the literal "2 accounts" let a mutation reporting "3 accounts"
+  // stay green. Assert the shape instead: a single account is never counted.
+  const solo = Model.composeNotification(sameAccount, true)
+  assert.ok(!/\d+ accounts/.test(solo.summary), solo.summary)
+  assert.ok(solo.summary.includes("Solo"), solo.summary)
   const twoAccounts = [event("resync", "A"), event("reauth", "B")]
   assert.ok(Model.composeNotification(twoAccounts, true).summary.includes("2 accounts"))
 })

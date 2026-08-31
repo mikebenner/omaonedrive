@@ -20,9 +20,23 @@ src = src.replace('property string discoveryJson: "[]"',
 open(sys.argv[2], "w").write(src)
 PY
 
-commands=$( ( ulimit -c 0; QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 \
-  "$qml_runner" -I "$root/tests/qmlstubs" "$harness" 2>&1 ) | sed -n 's/^qml: CMD //p')
+qml_out=$(mktemp)
+( ulimit -c 0; QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 \
+  "$qml_runner" -I "$root/tests/qmlstubs" "$harness" >"$qml_out" 2>&1 )
+qml_status=$?
+commands=$(sed -n 's/^qml: CMD //p' "$qml_out")
+rm -f -- "$qml_out"
+# The QML's own status matters: without this, a harness that printed one command
+# and then exited 1 passed the check.
+[ "$qml_status" -eq 0 ] || { echo "Contract check FAILED: the QML harness exited $qml_status" >&2; exit 1; }
 [ -n "$commands" ] || { echo "Contract check FAILED: the QML produced no commands" >&2; exit 1; }
+# All three modes must be represented, or a harness that stopped early would
+# silently narrow what is checked.
+for expected in "--quota" "--sync-status"; do
+  case "$commands" in *"$expected"*) ;; *)
+    echo "Contract check FAILED: no $expected command was produced" >&2; exit 1 ;;
+  esac
+done
 
 count=0
 while IFS= read -r line; do

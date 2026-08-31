@@ -96,6 +96,9 @@ Item {
   // already holding the shared slot, even though no process is running for it
   // yet. Without this the coordinator saw "not busy" and started a second one.
   readonly property bool cloudPending: _cloudRequested !== ""
+  // Which cloud mode this account occupies the shared slot with, running or
+  // merely deferred, so the coordinator can recognise a duplicate request.
+  readonly property string activeCloudMode: _activeCloudMode !== "" ? _activeCloudMode : _cloudRequested
   readonly property bool quotaChecking: _activeCloudMode === "quota" && statusProcess.running
   readonly property bool fullStatusChecking: _activeCloudMode === "sync-status" && statusProcess.running
 
@@ -134,6 +137,8 @@ Item {
     // directory; this makes onExited drop it.
     generation += 1
     initialized = false
+    // A new identity has not been polled yet, whatever the old one had done.
+    attempted = false
     actionStatus = ""
     // The displayed fields too: leaving these meant the panel showed the old
     // account's status and "Open folder" opened the PREVIOUS account's sync
@@ -180,6 +185,15 @@ Item {
     }
     if (statusProcess.running || helperPath === "") return
     startStatusProcess("")
+  }
+
+  // Internal follow-up refreshes -- after a control command settles, or a
+  // delayed re-read -- go through the coordinator's shared slot like everything
+  // else. Calling refresh() directly from those timers started a second helper
+  // while another account was mid-poll.
+  function requestRefresh() {
+    if (coordinator && coordinator.routinePollRunning()) return
+    refresh(false)
   }
 
   function checkQuota() {
@@ -463,7 +477,7 @@ Item {
         _pauseMinutes = 0
         scheduleResume(minutes)
       } else {
-        refresh(false)
+        requestRefresh()
       }
     }
   }
@@ -499,7 +513,7 @@ Item {
     id: delayedRefresh
     interval: 750
     repeat: false
-    onTriggered: root.refresh(false)
+    onTriggered: root.requestRefresh()
   }
 
   Timer {
@@ -509,7 +523,7 @@ Item {
     repeat: true
     onTriggered: {
       ticks += 1
-      root.refresh(false)
+      root.requestRefresh()
       if (ticks >= 5) {
         ticks = 0
         stop()
@@ -542,12 +556,18 @@ Item {
     onExited: function(exitCode) {
       var cloudMode = root._activeCloudMode
       root.refreshing = false
-      root.attempted = true
+      // Only a reply for the CURRENT identity counts as an attempt; a discarded
+      // one would tell the ramp this account had been sampled when it has not.
+      if (root._pendingGeneration === root.generation) root.attempted = true
       if (root._pendingGeneration !== root.generation) {
         // Started under a previous config directory. Applying it would restore
         // that directory's syncDir, quota and edge latches over the new
-        // account's -- the leak forgetSample exists to prevent.
+        // account's. Everything the normal path clears must still be cleared, or
+        // a pending cloud request keeps holding the global semaphore until the
+        // next routine poll.
         root._activeCloudMode = ""
+        root._cloudRequested = ""
+        root._quotaRetryQueued = false
         root.pollFinished(root.service)
         return
       }
@@ -616,7 +636,7 @@ Item {
         root.lastError = ""
         root.actionStatus = "Timed pause scheduled"
         actionStatusTimer.restart()
-        root.refresh(false)
+        root.requestRefresh()
       }
     }
   }

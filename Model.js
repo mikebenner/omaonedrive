@@ -600,9 +600,13 @@ function nextPollIndex(accounts, cursor) {
 
 // May this cloud request start now, and if not, should it be queued?
 // Returns "start" | "queue" | "drop".
-function cloudDecision(busy, queue, service, mode) {
+function cloudDecision(busy, queue, service, mode, active) {
   if (!service || !mode) return "drop"
   if (busy) {
+    // The request already RUNNING counts as a duplicate too. Seeing only a
+    // boolean, this used to queue a second copy of the check in flight, which
+    // then ran the same 30-second query again the moment the first finished.
+    if (active && active.service === service && active.mode === mode) return "drop"
     var pending = Array.isArray(queue) ? queue : []
     for (var index = 0; index < pending.length; index++) {
       if (pending[index].service === service && pending[index].mode === mode) return "drop"
