@@ -573,6 +573,19 @@ assert not module.valid_confdir("")
 # path and must survive.
 assert module.confdir_from_argv("/usr/bin/onedrive --monitor --confdir=/a\tb") == "/a\tb"
 
+# When a shorter prefix ALSO exists, the longest real directory wins -- returning
+# the prefix would point the client at a directory that is not a config dir.
+with tempfile.TemporaryDirectory() as temporary:
+  os.makedirs(os.path.join(temporary, "OneDrive"))
+  os.makedirs(os.path.join(temporary, "OneDrive Work"))
+  assert module.confdir_from_argv(
+    "/usr/bin/onedrive --monitor --confdir=" + os.path.join(temporary, "OneDrive Work")
+  ) == os.path.join(temporary, "OneDrive Work")
+
+# A unit that is not one of ours is not an account, and must not crash the
+# helper on the instance-name match.
+assert module.account_entry("dbus.service") is None
+
 # systemd joins argv with literal spaces and never quotes, so a confdir
 # containing a space arrives split. The longest prefix that is a real directory
 # is the answer; a path that resolves nowhere stays at the first token.
@@ -752,6 +765,25 @@ jq -e '.syncDir == "" and (.files | length) == 0' "$test_root/absent.json" >/dev
 FAKE_UNITS="$units" python3 "$root/onedrive-status.py" --service onedrive@personal.service --limit 5 \
   >"$test_root/service-only.json"
 jq -e '.authenticated == false and .syncDir == ""' "$test_root/service-only.json" >/dev/null
+
+# An unresolvable account must not be answered with the DEFAULT account's token,
+# files and sync directory under its name.
+FAKE_UNITS="$units" python3 "$root/onedrive-status.py" --service onedrive@nosuch.service --limit 5 \
+  >"$test_root/unresolvable.json"
+jq -e '.authenticated == false and .syncDir == "" and (.files | length) == 0' \
+  "$test_root/unresolvable.json" >/dev/null
+# ...while the default account, in the same run, still reports its own.
+python3 "$root/onedrive-status.py" --limit 5 >"$test_root/default-contrast.json"
+jq -e --arg sync_dir "$sync_dir" '.syncDir == $sync_dir and .authenticated == true' \
+  "$test_root/default-contrast.json" >/dev/null
+
+# A config file that is not valid UTF-8 must not turn a status call into a
+# traceback -- --confdir makes arbitrary directories reachable.
+binary_confdir="$test_home/.config/onedrive-accounts/binary"
+mkdir -p "$binary_confdir"
+printf 'sync_dir = "\xff\xfe"\n' >"$binary_confdir/config"
+python3 "$root/onedrive-status.py" --confdir "$binary_confdir" --limit 5 >"$test_root/binary.json"
+jq -e '.ok == true' "$test_root/binary.json" >/dev/null
 
 # --- the plugin state root stays 0700 even if only another account ever runs --
 

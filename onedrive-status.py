@@ -78,12 +78,15 @@ def account_state_dir(service, confdir):
   # must not block another account's ordinary poll. Keyed on the service AND
   # the config directory, because two services may share one confdir.
   base = state_dir()
-  if str(service) == DEFAULT_SERVICE and canonical_confdir(confdir) == canonical_confdir(default_confdir()):
+  if confdir is not None and str(service) == DEFAULT_SERVICE \
+      and canonical_confdir(confdir) == canonical_confdir(default_confdir()):
     return base
   # os.fsencode, not str.encode: Linux paths are bytes, and a non-UTF-8 path
   # arrives surrogate-escaped and would raise on a strict encode.
+  # An unknown confdir still gets a stable per-service key of its own.
+  confdir_key = os.fsencode(str(canonical_confdir(confdir))) if confdir is not None else b""
   digest = hashlib.sha256(
-    os.fsencode(str(service)) + b"\0" + os.fsencode(str(canonical_confdir(confdir)))
+    os.fsencode(str(service)) + b"\0" + confdir_key
   ).hexdigest()[:16]
   return base / "accounts" / digest
 
@@ -139,7 +142,7 @@ def read_config_values(confdir):
       if not match:
         continue
       values[match.group(1)] = match.group(2).split("#", 1)[0].strip().strip('"')
-  except OSError:
+  except (OSError, UnicodeDecodeError):
     pass
   return values
 
@@ -321,16 +324,15 @@ def join_confdir_tokens(head, rest):
       if token.endswith(quote):
         return candidate[:-1]
     return candidate
-  if Path(head).is_dir():
-    return head
+  best = head if Path(head).is_dir() else ""
   candidate = head
   for token in rest:
     if token.startswith("-"):
       break
     candidate += " " + token
     if Path(candidate).is_dir():
-      return candidate
-  return head
+      best = candidate
+  return best or head
 
 
 def confdir_from_argv(argv):
@@ -455,6 +457,11 @@ def default_account():
 
 
 def account_entry(unit):
+  match = ONEDRIVE_UNIT_PATTERN.fullmatch(unit)
+  if match is None:
+    # Reachable from build_status: --service accepts any unit name, not only
+    # ours. Not an account, so there is nothing to describe.
+    return None
   properties = unit_properties(unit, ["ExecStart", "Description", "LoadState"])
   if properties is None:
     return None
@@ -476,7 +483,6 @@ def account_entry(unit):
     # Present but unusable. Reporting the default here would alias this unit onto
     # the default account's token, cache and sync directory.
     return None
-  match = ONEDRIVE_UNIT_PATTERN.fullmatch(unit)
   return {
     "service": unit,
     "instance": match.group("instance") or "",
@@ -876,19 +882,27 @@ def build_status(args):
     # confdir out of that unit, exactly as discovery does. Reporting the default
     # account's token and files under this account's name would be a lie.
     entry = account_entry(args.service)
-    confdir = canonical_confdir(entry["confdir"]) if entry else default_confdir()
+    # None, not the default: an unresolvable unit is an unknown account, and
+    # answering with the default account's data would be a lie about identity.
+    confdir = canonical_confdir(entry["confdir"]) if entry else None
   else:
     confdir = default_confdir()
-  config = client_config(confdir, onedrive_path)
+  config = client_config(confdir, onedrive_path) if confdir else {
+    "syncDir": None,
+    "syncMode": "Two-way",
+    "clientVersion": "",
+  }
   sync_dir = config["syncDir"]
-  authenticated = (confdir / "refresh_token").is_file()
+  authenticated = confdir is not None and (confdir / "refresh_token").is_file()
   service = service_state(args.service)
   # RESUME_TIMER is one fixed unit that starts onedrive.service, so it says
   # nothing about any other account; reading it for them reported "Paused ·
   # resumes in ..." for accounts that were never paused. Per-account resume needs
   # a --resume-unit option, which is not in this change's scope.
   is_default_account = (
-    args.service == DEFAULT_SERVICE and confdir == canonical_confdir(default_confdir())
+    args.service == DEFAULT_SERVICE
+    and confdir is not None
+    and confdir == canonical_confdir(default_confdir())
   )
   resume_at = resume_timer_state() if is_default_account else 0
   journal = journal_state(args.service) if service["serviceAvailable"] else {
