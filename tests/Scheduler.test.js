@@ -8,7 +8,7 @@ const Model = require("../Model.js")
 // no harness here. Pulling the DECISIONS out makes them assertable.
 
 function acct(overrides) {
-  return Object.assign({ routinePolling: false, initialized: true }, overrides || {})
+  return Object.assign({ routinePolling: false, busy: false, initialized: true }, overrides || {})
 }
 
 test("an account already polling is never handed another slot", () => {
@@ -94,4 +94,38 @@ test("the queue cannot grow past one entry per account per mode", () => {
     }
   }
   assert.equal(queue.length, 6)
+})
+
+test("an account busy with a cloud check is skipped, not handed a wasted slot", () => {
+  // routinePolling is false during a cloud check -- it is not a routine poll --
+  // but the account will still refuse the slot, so handing it one wastes the
+  // tick entirely. Deleting the busy guard used to keep this file green.
+  const accounts = [acct({ busy: true }), acct()]
+  assert.equal(Model.nextPollIndex(accounts, 0), 1)
+
+  // ...including when it is the unreported account that would otherwise take
+  // pass-0 priority.
+  const priority = [acct({ busy: true, initialized: false }), acct()]
+  assert.equal(Model.nextPollIndex(priority, 0), 1)
+
+  // If every account is busy for any reason, nobody is picked.
+  assert.equal(Model.nextPollIndex([acct({ busy: true }), acct({ routinePolling: true })], 0), -1)
+})
+
+test("an account attempted but never initialised does not hold pass-0 forever", () => {
+  // A helper that always fails leaves `initialized` false. Priority is fine --
+  // it still needs a sample -- but the cursor must keep advancing so the others
+  // are reached, which the interleaving test above pins.
+  const accounts = [acct({ initialized: false }), acct({ initialized: false }), acct()]
+  const picks = []
+  let cursor = 0
+  for (let i = 0; i < 4; i++) {
+    const index = Model.nextPollIndex(accounts, cursor)
+    picks.push(index)
+    cursor = (index + 1) % accounts.length
+  }
+  assert.deepEqual(picks, [0, 1, 0, 1])
+  // The healthy account is reached once the unreported ones are satisfied.
+  const settled = [acct(), acct(), acct()]
+  assert.equal(Model.nextPollIndex(settled, 2), 2)
 })

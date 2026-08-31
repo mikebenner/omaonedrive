@@ -216,13 +216,28 @@ Item {
           "an account with no confdir spawns no process")
         harness.check(svc.accounts[0].refreshing === false,
           "...and does not latch `refreshing`, which would freeze every account")
-        svc.pollNextAccount()
-        harness.check(harness.runningStatusServices().length >= 1,
-          "...so the scheduler keeps polling the other accounts")
+        harness.check(svc.accounts[0].attempted === true,
+          "...and counts as attempted, so the startup hold and ramp can end")
+        // Poll every remaining account by name, so this cannot pass because the
+        // round-robin happened to pick someone else.
+        var reached = 0
+        for (var t2 = 0; t2 < svc.accounts.length; t2++) {
+          if (svc.accounts[t2] === svc.accounts[0]) continue
+          svc.accounts[t2].refresh(false)
+          if (svc.accounts[t2].refreshing) reached += 1
+          harness.finishStatus(svc.accounts[t2].service, harness.statusPayload({}))
+        }
+        harness.check(reached === svc.accounts.length - 1,
+          "...so every OTHER account still polls normally")
       }
 
       else if (s === 12) {
         console.log("notification broker")
+        // Step 11 deliberately blanked this account's confdir to test the freeze
+        // guard, so it stopped polling. Restore it, or it never reports and the
+        // "every affected account is named" assertion below fails for a reason
+        // of the harness's own making.
+        svc.accounts[0].confdir = "/c/a"
         Quickshell.detached = []
         harness.notifyBefore = Quickshell.spawnCount
         // Three accounts report attention across a poll round. The broker must
@@ -242,13 +257,26 @@ Item {
         // Nothing may have fired yet: the window spans a poll round.
         var early = Quickshell.detached.length + Quickshell.runningWith("notify-send").length
         harness.check(early === 0, "no notification fires before the burst window closes")
-        harness.burstStart = Date.now()
+        // "at most one" is satisfied by ZERO, and the window here is 10s while
+        // these steps are 60ms apart -- so asserting it now would pass whether
+        // the broker emitted one, none, or never flushed at all. Force the flush
+        // and assert on the real outcome instead.
+        svc.flushTransitions()
       }
 
       else if (s === 14) {
         var fired = Quickshell.detached.length + Quickshell.runningWith("notify-send").length
-        harness.check(fired <= 1,
-          "three accounts failing in one round produce at most ONE notification")
+        harness.check(fired === 1,
+          "three accounts failing in one round produce EXACTLY one notification")
+        var sent = Quickshell.detached.length
+          ? Quickshell.detached[0]
+          : (Quickshell.runningWith("notify-send").length
+              ? Quickshell.runningWith("notify-send")[0].command : [])
+        console.log("      notification argv: " + JSON.stringify(sent))
+        var joined = sent.join(" ")
+        harness.check(joined.indexOf("A") !== -1 && joined.indexOf("B") !== -1
+          && joined.indexOf("C") !== -1,
+          "...and it names every affected account rather than only one")
         harness.notified = fired
       }
 
