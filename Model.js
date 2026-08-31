@@ -588,7 +588,10 @@ function nextPollIndex(accounts, cursor) {
       // `busy` covers a cloud check too: such an account will refuse the slot,
       // so handing it one wastes the tick entirely.
       if (!account || account.routinePolling === true || account.busy === true) continue
-      if (pass === 0 && account.initialized === true) continue
+      // Priority is "has not been ATTEMPTED yet", not "has not reported". An
+      // account whose helper always fails never reports, and gating on that gave
+      // it every slot forever while the healthy accounts went unpolled.
+      if (pass === 0 && account.attempted === true) continue
       return index
     }
   }

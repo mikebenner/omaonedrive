@@ -210,7 +210,13 @@ Item {
         for (var d = 0; d < live.length; d++) live[d].finish(0, harness.statusPayload({}))
         harness.check(svc.accounts[0].refreshing === false, "drained before the freeze check")
         var spawnsBefore = Quickshell.spawnCount
-        svc.accounts[0].confdir = ""
+        // Through discovery, for the same reason: keep the binding intact so
+        // later steps can repoint this account.
+        svc.applyDiscovery([
+          { service: "onedrive@a.service", instance: "a", confdir: "", description: "A" },
+          { service: "onedrive@b.service", instance: "b", confdir: "/c/b", description: "B" },
+          { service: "onedrive@c.service", instance: "c", confdir: "/c/c", description: "C" }
+        ])
         svc.accounts[0].refresh(false)
         harness.check(Quickshell.spawnCount === spawnsBefore,
           "an account with no confdir spawns no process")
@@ -234,10 +240,15 @@ Item {
       else if (s === 12) {
         console.log("notification broker")
         // Step 11 deliberately blanked this account's confdir to test the freeze
-        // guard, so it stopped polling. Restore it, or it never reports and the
-        // "every affected account is named" assertion below fails for a reason
-        // of the harness's own making.
-        svc.accounts[0].confdir = "/c/a"
+        // guard, so it stopped polling. Restore it through DISCOVERY, not by
+        // assigning the property: a direct assignment destroys the binding to
+        // the model role, and every later descriptor update would then be unable
+        // to reach it.
+        svc.applyDiscovery([
+          { service: "onedrive@a.service", instance: "a", confdir: "/c/a", description: "A" },
+          { service: "onedrive@b.service", instance: "b", confdir: "/c/b", description: "B" },
+          { service: "onedrive@c.service", instance: "c", confdir: "/c/c", description: "C" }
+        ])
         Quickshell.detached = []
         harness.notifyBefore = Quickshell.spawnCount
         // Three accounts report attention across a poll round. The broker must
@@ -340,7 +351,73 @@ Item {
           "...including syncDir, so Open folder cannot open the PREVIOUS directory")
       }
 
+      else if (s === 171) { /* placeholder, never reached */ }
+
       else if (s === 18) {
+        console.log("a reply from the previous confdir must not be applied")
+        // The condition grok pointed out the earlier repoint test lacked: a poll
+        // already IN FLIGHT when the account is repointed. forgetSample keeps
+        // in-flight processes by design, so without a generation stamp that
+        // reply writes the OLD directory's syncDir, initialized and edge latches
+        // back over the new account.
+        var acct2 = svc.accounts[0]
+        acct2.refresh(false)
+        harness.check(acct2.refreshing === true, "a poll is in flight before the repoint")
+        svc.applyDiscovery([
+          { service: acct2.service, instance: "a", confdir: "/MOVED/a", description: "A" }
+        ])
+        harness.check(acct2.confdir === "/MOVED/a", "the repoint lands")
+        harness.check(acct2.initialized === false, "the sample is forgotten")
+        // Now let the OLD process finish with the previous directory's data.
+        harness.finishStatus(acct2.service, harness.statusPayload({ syncDir: "/OLD/dir" }))
+        harness.check(acct2.syncDir !== "/OLD/dir",
+          "a reply started under the old confdir is discarded, not applied")
+        harness.check(acct2.initialized === false,
+          "...and does not resurrect `initialized` for the previous directory")
+      }
+
+      else if (s === 19) {
+        console.log("every routine refresh goes through the shared slot")
+        // Step 18 reduced the payload to one account; this needs two, so the
+        // selected account can differ from the one being polled.
+        svc.applyDiscovery([
+          { service: "onedrive@a.service", instance: "a", confdir: "/c/a", description: "A" },
+          { service: "onedrive@b.service", instance: "b", confdir: "/c/b", description: "B" }
+        ])
+        // IPC refresh(), the panel's open() and the settle/delayed timers all
+        // reach Account.refresh, whose only guard is that account's OWN process.
+        // Without the coordinator's gate, automation calling refresh while the
+        // scheduler is mid-poll starts a second concurrent helper -- the thing
+        // the whole slot discipline exists to forbid.
+        var live0 = harness.runningStatusServices()
+        for (var q0 = 0; q0 < Quickshell.running().length; q0++) {
+          Quickshell.running()[q0].finish(0, harness.statusPayload({}))
+        }
+        svc.pollNextAccount()
+        var inFlight = harness.runningStatusServices()
+        harness.check(inFlight.length === 1, "the scheduler has exactly one poll in flight")
+        // The selected account must be a DIFFERENT one, or Account.refresh
+        // refuses it on its own process and the test passes either way.
+        var other = ""
+        for (var o = 0; o < svc.accounts.length; o++) {
+          if (svc.accounts[o].service !== inFlight[0]) { other = svc.accounts[o].service; break }
+        }
+        svc.selectedService = other
+        harness.check(svc.selectedAccount.service !== inFlight[0],
+          "the selected account is not the one being polled")
+        harness.check(svc.selectedAccount.refreshing === false,
+          "...and is idle, so only the shared slot can stop it")
+        svc.refresh(false)
+        harness.check(harness.runningStatusServices().length === inFlight.length,
+          "a facade refresh starts nothing while another account's poll is in flight")
+        // A cloud check is explicit intent and has its own semaphore, so it is
+        // still allowed through.
+        for (var q1 = 0; q1 < Quickshell.running().length; q1++) {
+          Quickshell.running()[q1].finish(0, harness.statusPayload({}))
+        }
+      }
+
+      else if (s === 20) {
         console.log("a continuous stream of events must still flush")
         // The discriminating case. With burstTimer.restart() on every enqueue,
         // the window means "N ms of QUIET" -- so a stream of events arriving
@@ -355,7 +432,7 @@ Item {
         harness.streamTicks = 0
       }
 
-      else if (s >= 19 && s <= 40) {
+      else if (s >= 21 && s <= 42) {
         // One event per tick, faster than the 900ms window.
         svc.enqueueTransition({
           service: "onedrive@a.service", name: "A", kind: "reauth",
@@ -365,14 +442,14 @@ Item {
         harness.streamTicks += 1
       }
 
-      else if (s === 41) {
+      else if (s === 43) {
         var fired = Quickshell.detached.length + Quickshell.runningWith("notify-send").length
         harness.check(fired >= 1,
           "a stream of events flushes rather than being deferred forever (" +
           harness.streamTicks + " events over ~" + (harness.streamTicks * 60) + "ms)")
       }
 
-      else if (s >= 42) {
+      else if (s >= 44) {
         console.log(harness.failures === 0
           ? "QML harness: all checks passed"
           : "QML harness: " + harness.failures + " FAILED")

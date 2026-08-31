@@ -29,6 +29,11 @@ Item {
   // is over" must be measured with -- otherwise one broken account either
   // freezes the aggregate forever or defeats the startup notification hold.
   property bool attempted: false
+  // Incremented whenever this account's identity changes. A status reply carries
+  // the generation it was started under, so a reply from the previous config
+  // directory is discarded instead of overwriting the new one's state.
+  property int generation: 0
+  property int _pendingGeneration: 0
 
   property var settings: ({})
   property var coordinator: null
@@ -125,7 +130,11 @@ Item {
   // Drop everything derived from a previous config directory, keeping identity
   // and in-flight processes. The next poll repopulates it.
   function forgetSample() {
+    // Any reply already in flight was started under the previous config
+    // directory; this makes onExited drop it.
+    generation += 1
     initialized = false
+    actionStatus = ""
     // The displayed fields too: leaving these meant the panel showed the old
     // account's status and "Open folder" opened the PREVIOUS account's sync
     // directory -- the exact leak this function exists to prevent.
@@ -237,6 +246,7 @@ Item {
     _activeCloudMode = cloudMode
     _statusOutput = ""
     _statusError = ""
+    _pendingGeneration = generation
     refreshing = true
     if (cloudMode !== "") {
       actionStatusTimer.stop()
@@ -533,6 +543,14 @@ Item {
       var cloudMode = root._activeCloudMode
       root.refreshing = false
       root.attempted = true
+      if (root._pendingGeneration !== root.generation) {
+        // Started under a previous config directory. Applying it would restore
+        // that directory's syncDir, quota and edge latches over the new
+        // account's -- the leak forgetSample exists to prevent.
+        root._activeCloudMode = ""
+        root.pollFinished(root.service)
+        return
+      }
       var stdout = String(statusStdout.text || root._statusOutput || "")
       var stderr = String(statusStderr.text || root._statusError || "")
       if (exitCode === 0) root.applyStatus(stdout)

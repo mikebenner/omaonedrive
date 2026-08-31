@@ -8,7 +8,7 @@ const Model = require("../Model.js")
 // no harness here. Pulling the DECISIONS out makes them assertable.
 
 function acct(overrides) {
-  return Object.assign({ routinePolling: false, busy: false, initialized: true }, overrides || {})
+  return Object.assign({ routinePolling: false, busy: false, attempted: true }, overrides || {})
 }
 
 test("an account already polling is never handed another slot", () => {
@@ -19,7 +19,7 @@ test("an account already polling is never handed another slot", () => {
 })
 
 test("accounts that have not reported take priority over ones that have", () => {
-  const accounts = [acct(), acct({ initialized: false }), acct()]
+  const accounts = [acct(), acct({ attempted: false }), acct()]
   assert.equal(Model.nextPollIndex(accounts, 0), 1)
 })
 
@@ -28,7 +28,7 @@ test("several unreported accounts interleave instead of one taking every slot", 
   // returned the FIRST unreported account every slot, so with three of them the
   // second and third were never polled until the first exhausted a 15-slot
   // counter -- 150 seconds at default settings, with no badge on the bar.
-  const accounts = [acct({ initialized: false }), acct({ initialized: false }), acct({ initialized: false })]
+  const accounts = [acct({ attempted: false }), acct({ attempted: false }), acct({ attempted: false })]
   const picked = []
   let cursor = 0
   for (let slot = 0; slot < 6; slot++) {
@@ -45,7 +45,7 @@ test("a paused account does not consume startup priority", () => {
   // Priority is "has not reported", not "not running". A deliberately paused
   // account is a known state; treating it as ramping made it monopolise slots
   // every time the user paused it.
-  const accounts = [acct({ initialized: true }), acct({ initialized: false })]
+  const accounts = [acct({ attempted: true }), acct({ attempted: false })]
   assert.equal(Model.nextPollIndex(accounts, 0), 1)
 })
 
@@ -105,27 +105,42 @@ test("an account busy with a cloud check is skipped, not handed a wasted slot", 
 
   // ...including when it is the unreported account that would otherwise take
   // pass-0 priority.
-  const priority = [acct({ busy: true, initialized: false }), acct()]
+  const priority = [acct({ busy: true, attempted: false }), acct()]
   assert.equal(Model.nextPollIndex(priority, 0), 1)
 
   // If every account is busy for any reason, nobody is picked.
   assert.equal(Model.nextPollIndex([acct({ busy: true }), acct({ routinePolling: true })], 0), -1)
 })
 
-test("an account attempted but never initialised does not hold pass-0 forever", () => {
-  // A helper that always fails leaves `initialized` false. Priority is fine --
-  // it still needs a sample -- but the cursor must keep advancing so the others
-  // are reached, which the interleaving test above pins.
-  const accounts = [acct({ initialized: false }), acct({ initialized: false }), acct()]
+test("an account that can never report does not monopolise the scheduler", () => {
+  // A helper that always fails leaves `initialized` false forever. Priority is
+  // "has not been ATTEMPTED", so such an account rejoins the round-robin after
+  // its first try instead of taking every slot for the life of the session.
+  //
+  // An earlier version of this test asserted [0, 1, 0, 1] -- encoding the
+  // monopoly as the expected behaviour, with the healthy third account never
+  // polled at all.
+  const accounts = [
+    acct({ attempted: true, initialized: false }),   // broken, already tried
+    acct({ attempted: true }),
+    acct({ attempted: true })
+  ]
   const picks = []
   let cursor = 0
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 9; i++) {
     const index = Model.nextPollIndex(accounts, cursor)
     picks.push(index)
     cursor = (index + 1) % accounts.length
   }
-  assert.deepEqual(picks, [0, 1, 0, 1])
-  // The healthy account is reached once the unreported ones are satisfied.
-  const settled = [acct(), acct(), acct()]
-  assert.equal(Model.nextPollIndex(settled, 2), 2)
+  assert.deepEqual(picks, [0, 1, 2, 0, 1, 2, 0, 1, 2])
+  assert.equal(new Set(picks).size, 3, "every account must be reached")
+})
+
+test("priority is 'not yet attempted', not 'not yet reported'", () => {
+  // Before the first attempt, an account jumps the queue -- that is the ramp.
+  assert.equal(Model.nextPollIndex(
+    [acct({ attempted: true }), acct({ attempted: false })], 0), 1)
+  // After it, even if it never produced a usable sample, it waits its turn.
+  assert.equal(Model.nextPollIndex(
+    [acct({ attempted: true }), acct({ attempted: true, initialized: false })], 0), 0)
 })

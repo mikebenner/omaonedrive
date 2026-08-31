@@ -189,7 +189,7 @@ Item {
       rows.push({
         routinePolling: _accountObjects[index].routinePolling,
         busy: _accountObjects[index].statusBusy,
-        initialized: _accountObjects[index].initialized
+        attempted: _accountObjects[index].attempted
       })
     }
     return rows
@@ -369,9 +369,14 @@ Item {
   // the helper's own timeout constants. A second literal here would drift.
   readonly property int cloudTimeoutSec: selectedAccount ? selectedAccount.cloudTimeoutSec : 30
 
-  function refresh(remote) { if (selectedAccount) selectedAccount.refresh(remote) }
-  // Same slot discipline as selectAccount: opening the panel while the scheduler
-  // is mid-poll on another account would otherwise start a second helper.
+  // A cloud check is explicit user intent and is serialised by its own
+  // semaphore; a routine refresh goes through the shared slot, so IPC, the panel
+  // and the scheduler cannot each start a helper at the same time.
+  function refresh(remote) {
+    if (!selectedAccount) return
+    if (remote === true) { selectedAccount.refresh(true); return }
+    refreshSelected()
+  }
   function refreshSelected() {
     if (selectedAccount && !routinePollRunning()) selectedAccount.refresh(false)
   }
