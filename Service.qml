@@ -343,10 +343,18 @@ Item {
     id: accountInstances
     model: descriptors
     delegate: Account {
-      required property string service
-      required property string instance
-      required property string confdir
-      required property string description
+      // Bind the model roles onto Account's OWN properties. Redeclaring them as
+      // `required property string service` here SHADOWS the base's, producing a
+      // split brain: reads from outside the object see the model role, but every
+      // read inside Account.qml -- id-qualified, unqualified, or in a binding --
+      // sees the base default. Status reads went through JS and looked correct
+      // while every control, timer and login vector silently targeted
+      // onedrive.service. Verified with a minimal qml6 reproduction.
+      required property var model
+      service: model.service
+      instance: model.instance
+      confdir: model.confdir
+      description: model.description
       settings: root.settings
       coordinator: root
       onStateChanged: root._aggregateRevision++
