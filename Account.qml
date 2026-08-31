@@ -178,39 +178,25 @@ Item {
 
   signal openPanelRequested(string service)
   signal pollFinished(string service)
+  signal transition(var event)
   // Emitted whenever a poll changes anything the aggregate depends on, so the
   // coordinator can invalidate its worst-of-N without polling every account.
   signal stateChanged()
 
-  // A single account keeps today's unattributed summaries; with more than one
-  // the account is named, because "OneDrive sync failed" is useless when three
-  // accounts are running.
-  function attribute(summary) {
-    return instance === "" ? summary : summary + " — " + displayName
-  }
-
-  function notify(urgency, summary, body) {
-    if (!notificationsEnabled) return
-    Quickshell.execDetached(Commands.notify(urgency, attribute(summary), body))
-  }
-
-  // Omarchy's notification popups invoke the libnotify action registered under
-  // the canonical "default" identifier when the popup is clicked, rather than
-  // rendering per-action buttons — so the action is always "default" and the
-  // intended behavior is tracked here. One tracked notify-send at a time so
-  // the click can be read back from stdout; overlaps fall back to notify().
-  property string _notifyBehavior: ""
-
-  function notifyWithAction(urgency, summary, body, behavior, actionLabel) {
-    if (!notificationsEnabled) return
-    if (notifyProcess.running) {
-      notify(urgency, summary, body)
-      return
-    }
-    _notifyBehavior = behavior
-    notifyProcess.command = Commands.notify(
-      urgency, attribute(summary), body, { id: "default", label: actionLabel })
-    notifyProcess.running = true
+  // Transitions are reported, not delivered. The coordinator batches whatever
+  // arrives in one polling burst into at most one desktop notification, so three
+  // accounts going wrong together do not produce three popups.
+  function report(kind, summary, short, body, action, actionLabel) {
+    transition({
+      service: root.service,
+      name: displayName,
+      kind: kind,
+      summary: summary,
+      short: short,
+      body: body,
+      action: action || "",
+      actionLabel: actionLabel || ""
+    })
   }
 
   function applyStatus(raw) {
@@ -259,21 +245,22 @@ Item {
     stateChanged()
 
     if (resyncRequired && !wasResync)
-      notifyWithAction("critical", "OneDrive needs a resync",
+      report("resync", "OneDrive needs a resync", "Resync required",
         "Syncing stopped until the resync repair runs.",
         "repair", "Run resync repair")
     else if (serviceFailed && !wasFailed)
-      notifyWithAction("critical", "OneDrive sync failed",
+      report("failed", "OneDrive sync failed", "Sync failed",
         lastError !== "" ? lastError : "The OneDrive service entered a failed state.",
         "open", "Open OneDrive panel")
     if (reauthRequired && !wasReauth)
-      notifyWithAction("critical", "OneDrive needs reauthentication",
+      report("reauth", "OneDrive needs reauthentication", "Reauthentication required",
         "Sign in again to keep syncing.",
         "open", "Open OneDrive panel")
+    // Recovery is only meaningful for an account that was seen unhealthy first.
     if (hadAttention && !serviceFailed && !resyncRequired && !reauthRequired)
-      notify("normal", "OneDrive recovered", "Syncing is healthy again.")
+      report("recovered", "OneDrive recovered", "Recovered", "Syncing is healthy again.")
     if (!wasStorageSevere && Model.usageSevere(usedBytes, quotaBytes, quotaKnown))
-      notify("normal", "OneDrive storage almost full",
+      report("storage", "OneDrive storage almost full", "Almost full",
         Model.freeText(usedBytes, quotaBytes, quotaKnown) + " of "
           + Model.formatBytes(quotaBytes) + " remains.")
   }
@@ -417,24 +404,6 @@ Item {
     interval: 2500
     repeat: false
     onTriggered: root.actionStatus = ""
-  }
-
-  Process {
-    id: notifyProcess
-    running: false
-    command: []
-    stdout: StdioCollector {
-      id: notifyStdout
-      waitForEnd: true
-    }
-    stderr: StdioCollector { waitForEnd: true }
-    onExited: function(exitCode) {
-      var behavior = root._notifyBehavior
-      root._notifyBehavior = ""
-      if (String(notifyStdout.text || "").trim() !== "default") return
-      if (behavior === "open") root.openPanelRequested(root.service)
-      else if (behavior === "repair") root.repairResync()
-    }
   }
 
   Process {

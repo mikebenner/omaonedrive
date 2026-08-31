@@ -388,6 +388,105 @@ function badgeKind(kind) {
   return ""   // healthy, and checking before the first poll
 }
 
+// Compose one desktop notification from the events of a single polling burst.
+//
+// Three accounts going wrong at once must not produce three popups, and the old
+// unattributed summaries ("OneDrive sync failed") are useless when several
+// accounts exist. Returns null when there is nothing to send.
+//
+// An event is { service, name, kind, body, action } where kind is one of
+// "resync" | "failed" | "reauth" | "storage" | "recovered".
+var ATTENTION_KINDS = { resync: 1, failed: 2, reauth: 3 }
+
+function composeNotification(events, multiAccount) {
+  var list = Array.isArray(events) ? events.filter(function (event) {
+    return event && typeof event === "object"
+  }) : []
+  if (list.length === 0) return null
+
+  var attention = list.filter(function (event) { return ATTENTION_KINDS[event.kind] })
+  var recovered = list.filter(function (event) { return event.kind === "recovered" })
+  var storage = list.filter(function (event) { return event.kind === "storage" })
+
+  // Attention outranks everything: it is the only kind that is actionable.
+  if (attention.length === 1 && recovered.length === 0 && storage.length === 0) {
+    var only = attention[0]
+    return {
+      urgency: "critical",
+      summary: multiAccount ? only.summary + " — " + only.name : only.summary,
+      body: only.body,
+      action: only.action || "",
+      actionLabel: only.actionLabel || "",
+      service: only.service
+    }
+  }
+  if (attention.length > 0) {
+    // Several at once, or mixed with other kinds: one grouped popup that names
+    // each account, and a click opens the worst one rather than acting blindly.
+    var worst = attention.slice().sort(function (left, right) {
+      return ATTENTION_KINDS[left.kind] - ATTENTION_KINDS[right.kind]
+    })[0]
+    if (attention.length === 1) {
+      return {
+        urgency: "critical",
+        summary: multiAccount ? worst.summary + " — " + worst.name : worst.summary,
+        body: attention.concat(recovered, storage).map(function (event) {
+          return event.name + ": " + event.short
+        }).join("\n"),
+        action: "open",
+        actionLabel: "Open OneDrive panel",
+        service: worst.service
+      }
+    }
+    return {
+      urgency: "critical",
+      summary: "OneDrive needs attention in " + attention.length + " accounts",
+      body: attention.map(function (event) { return event.name + ": " + event.short }).join("\n"),
+      action: "open",
+      actionLabel: "Open OneDrive panel",
+      service: worst.service
+    }
+  }
+  if (storage.length > 0) {
+    if (storage.length === 1) {
+      return {
+        urgency: "normal",
+        summary: multiAccount ? storage[0].summary + " — " + storage[0].name : storage[0].summary,
+        body: storage[0].body,
+        action: "",
+        actionLabel: "",
+        service: storage[0].service
+      }
+    }
+    return {
+      urgency: "normal",
+      summary: storage.length + " OneDrive accounts are almost full",
+      body: storage.map(function (event) { return event.name + ": " + event.short }).join("\n"),
+      action: "",
+      actionLabel: "",
+      service: storage[0].service
+    }
+  }
+  if (recovered.length === 1) {
+    return {
+      urgency: "normal",
+      summary: multiAccount ? "OneDrive recovered — " + recovered[0].name : "OneDrive recovered",
+      body: recovered[0].body,
+      action: "",
+      actionLabel: "",
+      service: recovered[0].service
+    }
+  }
+  return {
+    urgency: "normal",
+    summary: recovered.length + " OneDrive accounts recovered",
+    body: recovered.map(function (event) { return event.name + ": " + event.short }).join("\n"),
+    action: "",
+    actionLabel: "",
+    service: recovered[0].service
+  }
+}
+
 // The glyph for a badge kind. Shared so the bar badge and the account selector
 // cannot drift apart -- they are the same vocabulary at two sizes.
 function badgeGlyph(kind) {
@@ -464,6 +563,7 @@ if (typeof module !== "undefined") {
     accountState: accountState,
     aggregateAccounts: aggregateAccounts,
     aggregateTooltip: aggregateTooltip,
+    composeNotification: composeNotification,
     badgeKind: badgeKind,
     badgeGlyph: badgeGlyph,
     reconcilePlan: reconcilePlan,

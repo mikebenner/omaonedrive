@@ -1,5 +1,6 @@
 import QtQuick
 import QtQml.Models
+import Quickshell
 import Quickshell.Io
 import "Model.js" as Model
 import "Commands.js" as Commands
@@ -223,6 +224,57 @@ Item {
     if (account) account.startCloudCheck(entry.mode)
   }
 
+  // --- notification broker --------------------------------------------------
+
+  // One popup per polling burst, not one per account. Accounts report
+  // transitions; this decides how many notifications that becomes.
+  property var _pendingEvents: []
+  property bool _baselineSent: false
+
+  function enqueueTransition(event) {
+    if (!notificationsEnabled || !event) return
+    var next = _pendingEvents.slice()
+    next.push(event)
+    _pendingEvents = next
+    burstTimer.restart()
+  }
+
+  function flushTransitions() {
+    var events = _pendingEvents
+    _pendingEvents = []
+    if (events.length === 0) return
+    var composed = Model.composeNotification(events, accountCount > 1)
+    if (!composed) return
+    _baselineSent = true
+    if (composed.action === "") {
+      Quickshell.execDetached(Commands.notify(composed.urgency, composed.summary, composed.body))
+      return
+    }
+    // Only one action-bearing notify-send can be tracked at a time, because the
+    // click is read back from its stdout. A second one waits rather than losing
+    // its action.
+    if (notifyProcess.running) {
+      var queued = _actionQueue.slice()
+      queued.push(composed)
+      _actionQueue = queued
+      return
+    }
+    startActionNotification(composed)
+  }
+
+  property var _actionQueue: []
+  property string _notifyBehavior: ""
+  property string _notifyService: ""
+
+  function startActionNotification(composed) {
+    _notifyBehavior = composed.action
+    _notifyService = composed.service
+    notifyProcess.command = Commands.notify(
+      composed.urgency, composed.summary, composed.body,
+      { id: "default", label: composed.actionLabel })
+    notifyProcess.running = true
+  }
+
   // --- selected-account facade ----------------------------------------------
   //
   // Panel.qml and BarWidget.qml still say `oneDrive.running`. Every forward is
@@ -300,9 +352,62 @@ Item {
       onStateChanged: root._aggregateRevision++
       onOpenPanelRequested: root.openPanelRequested()
       onPollFinished: root.cloudFinished()
+      onTransition: function(event) { root.enqueueTransition(event) }
     }
     onObjectAdded: function(index, object) { root.trackAccount(object) }
     onObjectRemoved: function(index, object) { root.untrackAccount(object) }
+  }
+
+  // A polling burst is roughly one scheduler slot. Until every account has
+  // reported once, the window is held open so a startup round of pre-existing
+  // problems becomes ONE baseline notification rather than N.
+  Timer {
+    id: burstTimer
+    property int heldRounds: 0
+    interval: 900
+    repeat: false
+    onTriggered: {
+      if (!root.aggregate.initialized && !root._baselineSent && heldRounds < 12) {
+        heldRounds += 1
+        burstTimer.restart()
+        return
+      }
+      heldRounds = 0
+      root.flushTransitions()
+    }
+  }
+
+  // Omarchy's notification popups invoke the libnotify action registered under
+  // the canonical "default" identifier when the popup is clicked, rather than
+  // rendering per-action buttons, so the action is always "default" and the
+  // intended behaviour is tracked here.
+  Process {
+    id: notifyProcess
+    running: false
+    command: []
+    stdout: StdioCollector { id: notifyStdout; waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(exitCode) {
+      var behavior = root._notifyBehavior
+      var service = root._notifyService
+      root._notifyBehavior = ""
+      root._notifyService = ""
+      if (root._actionQueue.length > 0) {
+        var queued = root._actionQueue.slice()
+        var next = queued.shift()
+        root._actionQueue = queued
+        Qt.callLater(function() { root.startActionNotification(next) })
+      }
+      if (String(notifyStdout.text || "").trim() !== "default") return
+      if (behavior === "open") {
+        // Select the account the notification was about before opening.
+        if (service !== "") root.selectAccount(service)
+        root.openPanelRequested()
+      } else if (behavior === "repair") {
+        var account = root.accountForService(service)
+        if (account) account.repairResync()
+      }
+    }
   }
 
   Process {
