@@ -17,7 +17,7 @@ from pathlib import Path
 
 PLUGIN_ID = "io.github.salemsayed.omaonedrive"
 DEFAULT_SERVICE = "onedrive.service"
-RESUME_TIMER = "omaonedrive-resume.timer"
+DEFAULT_RESUME_UNIT = "omaonedrive-resume"
 SCAN_CACHE_SECONDS = 120
 MAX_SERVICE_EVENTS = 2
 MAX_FILE_EVENTS = 5
@@ -254,10 +254,10 @@ def service_state(service):
   }
 
 
-def resume_timer_state():
+def resume_timer_state(unit):
   exit_code, output = systemctl_value([
     "list-timers",
-    RESUME_TIMER,
+    unit + ".timer",
     "--all",
     "--output=json",
     "--no-pager",
@@ -277,12 +277,40 @@ def resume_timer_state():
   return next_usec // 1_000_000 if next_usec > 0 else 0
 
 
-# Unit names the helper is willing to hand back to itself through --service.
-# Discovery and the --service gate MUST accept the same set, or an account can be
-# discoverable and permanently unusable. Backslash and colon are here because
-# systemd-escape produces them (e.g. "onedrive@team\x20space.service"); "/" is
-# not, so "../bad.service" is still refused.
-SERVICE_NAME_PATTERN = re.compile(r"[A-Za-z0-9_.@:\\-]+\.service")
+# Unit names the helper is willing to hand back to itself through --service or
+# --resume-unit. Discovery and the --service gate MUST accept the same set, or an
+# account can be discoverable and permanently unusable, so both patterns are
+# derived from one class. Backslash and colon are here because systemd-escape
+# produces them (e.g. "onedrive@team\x20space.service"); "/" is not, so
+# "../bad.service" is still refused. The first character may not be "-": these
+# names are passed to systemctl as positional arguments, and "-Mguest.timer" or
+# "-Hsomewhere.timer" would be read as its --machine/--host OPTIONS instead.
+UNIT_NAME = r"[A-Za-z0-9_.@:\\][A-Za-z0-9_.@:\\-]*"
+UNIT_NAME_PATTERN = re.compile(UNIT_NAME)
+SERVICE_NAME_PATTERN = re.compile(UNIT_NAME + r"\.service")
+
+# systemd's own ceiling for a unit name, which the ".timer" suffix counts against.
+MAX_UNIT_NAME_LENGTH = 255
+
+
+def valid_unit_name(value, suffix):
+  # One rule for every unit name the helper hands to systemctl, so the --service
+  # and --resume-unit gates cannot drift apart.
+  if len(value) + len(suffix) > MAX_UNIT_NAME_LENGTH:
+    return False
+  return UNIT_NAME_PATTERN.fullmatch(value) is not None
+
+
+def resume_unit_name(value):
+  # The caller passes a BARE name and resume_timer_state appends ".timer", so a
+  # value that already carries one would query "<name>.timer.timer". Strip one
+  # rather than refusing: the same spelling is legitimate when an instance ends
+  # in ".timer", and refusing would abort the status call entirely.
+  return value[: -len(".timer")] if value.endswith(".timer") else value
+
+
+def valid_resume_unit(value):
+  return valid_unit_name(resume_unit_name(value), ".timer")
 
 # "onedrive.service" or "onedrive@<instance>.service"; the bare template
 # "onedrive@.service" deliberately does not match — it is not an account.
@@ -324,11 +352,13 @@ def join_confdir_tokens(head, rest):
       if token.endswith(quote):
         return candidate[:-1]
     return candidate
+  # Every space-joined prefix is tried, including through tokens that look like
+  # flags: a directory may legitimately be named "My - Work", and only the
+  # filesystem can settle it. The longest one that exists wins; a following real
+  # flag simply never forms an existing path.
   best = head if Path(head).is_dir() else ""
   candidate = head
   for token in rest:
-    if token.startswith("-"):
-      break
     candidate += " " + token
     if Path(candidate).is_dir():
       best = candidate
@@ -895,16 +925,15 @@ def build_status(args):
   sync_dir = config["syncDir"]
   authenticated = confdir is not None and (confdir / "refresh_token").is_file()
   service = service_state(args.service)
-  # RESUME_TIMER is one fixed unit that starts onedrive.service, so it says
-  # nothing about any other account; reading it for them reported "Paused ·
-  # resumes in ..." for accounts that were never paused. Per-account resume needs
-  # a --resume-unit option, which is not in this change's scope.
-  is_default_account = (
-    args.service == DEFAULT_SERVICE
-    and confdir is not None
-    and confdir == canonical_confdir(default_confdir())
+  # Each account schedules its own transient resume unit, so the caller names it.
+  # Without the flag only the plain service has a well-known one --
+  # DEFAULT_RESUME_UNIT starts onedrive.service, so its pending time belongs to
+  # that SERVICE whichever config directory was named -- and every other account
+  # reports no resume time rather than borrowing that one.
+  resume_unit = args.resume_unit or (
+    DEFAULT_RESUME_UNIT if args.service == DEFAULT_SERVICE else ""
   )
-  resume_at = resume_timer_state() if is_default_account else 0
+  resume_at = resume_timer_state(resume_unit_name(resume_unit)) if resume_unit else 0
   journal = journal_state(args.service) if service["serviceAvailable"] else {
     "syncing": False,
     "lastSyncTs": 0,
@@ -1042,19 +1071,29 @@ def main():
   parser.add_argument("--service", default=DEFAULT_SERVICE, help="systemd user service name")
   parser.add_argument("--confdir", default=None, help="OneDrive config directory for this account")
   parser.add_argument(
+    "--resume-unit",
+    default=None,
+    help="bare name of this account's transient resume unit, without a suffix; "
+         "when omitted only " + DEFAULT_SERVICE + " reads its legacy "
+         + DEFAULT_RESUME_UNIT + " timer and every other account reports none",
+  )
+  parser.add_argument(
     "--list-accounts",
     action="store_true",
     help="print the accounts configured on this machine as JSON and exit",
   )
   args = parser.parse_args()
-  if args.list_accounts:
-    print(json.dumps(discover_accounts(), separators=(",", ":")))
-    return
   args.limit = max(5, min(50, args.limit))
-  if not SERVICE_NAME_PATTERN.fullmatch(args.service):
+  if not SERVICE_NAME_PATTERN.fullmatch(args.service) \
+      or not valid_unit_name(args.service[: -len(".service")], ".service"):
     parser.error("invalid service name")
   if args.confdir is not None and not valid_confdir(args.confdir):
     parser.error("invalid confdir")
+  if args.resume_unit is not None and not valid_resume_unit(args.resume_unit):
+    parser.error("invalid resume unit")
+  if args.list_accounts:
+    print(json.dumps(discover_accounts(), separators=(",", ":")))
+    return
   print(json.dumps(build_status(args), separators=(",", ":")))
 
 
