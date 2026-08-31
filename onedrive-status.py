@@ -286,22 +286,31 @@ def resume_timer_state(unit):
 # names are passed to systemctl as positional arguments, and "-Mguest.timer" or
 # "-Hsomewhere.timer" would be read as its --machine/--host OPTIONS instead.
 UNIT_NAME = r"[A-Za-z0-9_.@:\\][A-Za-z0-9_.@:\\-]*"
+UNIT_NAME_PATTERN = re.compile(UNIT_NAME)
 SERVICE_NAME_PATTERN = re.compile(UNIT_NAME + r"\.service")
-RESUME_UNIT_PATTERN = re.compile(UNIT_NAME)
 
 # systemd's own ceiling for a unit name, which the ".timer" suffix counts against.
 MAX_UNIT_NAME_LENGTH = 255
 
 
+def valid_unit_name(value, suffix):
+  # One rule for every unit name the helper hands to systemctl, so the --service
+  # and --resume-unit gates cannot drift apart.
+  if len(value) + len(suffix) > MAX_UNIT_NAME_LENGTH:
+    return False
+  return UNIT_NAME_PATTERN.fullmatch(value) is not None
+
+
+def resume_unit_name(value):
+  # The caller passes a BARE name and resume_timer_state appends ".timer", so a
+  # value that already carries one would query "<name>.timer.timer". Strip one
+  # rather than refusing: the same spelling is legitimate when an instance ends
+  # in ".timer", and refusing would abort the status call entirely.
+  return value[: -len(".timer")] if value.endswith(".timer") else value
+
+
 def valid_resume_unit(value):
-  # The caller passes a BARE unit name; resume_timer_state appends the suffix.
-  # A value that already carries one would silently query "<name>.timer.timer"
-  # and report no pending resume at all.
-  if value.endswith((".timer", ".service")):
-    return False
-  if len(value) + len(".timer") > MAX_UNIT_NAME_LENGTH:
-    return False
-  return RESUME_UNIT_PATTERN.fullmatch(value) is not None
+  return valid_unit_name(resume_unit_name(value), ".timer")
 
 # "onedrive.service" or "onedrive@<instance>.service"; the bare template
 # "onedrive@.service" deliberately does not match — it is not an account.
@@ -343,11 +352,13 @@ def join_confdir_tokens(head, rest):
       if token.endswith(quote):
         return candidate[:-1]
     return candidate
+  # Every space-joined prefix is tried, including through tokens that look like
+  # flags: a directory may legitimately be named "My - Work", and only the
+  # filesystem can settle it. The longest one that exists wins; a following real
+  # flag simply never forms an existing path.
   best = head if Path(head).is_dir() else ""
   candidate = head
   for token in rest:
-    if token.startswith("-"):
-      break
     candidate += " " + token
     if Path(candidate).is_dir():
       best = candidate
@@ -922,7 +933,7 @@ def build_status(args):
   resume_unit = args.resume_unit or (
     DEFAULT_RESUME_UNIT if args.service == DEFAULT_SERVICE else ""
   )
-  resume_at = resume_timer_state(resume_unit) if resume_unit else 0
+  resume_at = resume_timer_state(resume_unit_name(resume_unit)) if resume_unit else 0
   journal = journal_state(args.service) if service["serviceAvailable"] else {
     "syncing": False,
     "lastSyncTs": 0,
@@ -1072,16 +1083,17 @@ def main():
     help="print the accounts configured on this machine as JSON and exit",
   )
   args = parser.parse_args()
-  if args.list_accounts:
-    print(json.dumps(discover_accounts(), separators=(",", ":")))
-    return
   args.limit = max(5, min(50, args.limit))
-  if not SERVICE_NAME_PATTERN.fullmatch(args.service):
+  if not SERVICE_NAME_PATTERN.fullmatch(args.service) \
+      or not valid_unit_name(args.service[: -len(".service")], ".service"):
     parser.error("invalid service name")
   if args.confdir is not None and not valid_confdir(args.confdir):
     parser.error("invalid confdir")
   if args.resume_unit is not None and not valid_resume_unit(args.resume_unit):
     parser.error("invalid resume unit")
+  if args.list_accounts:
+    print(json.dumps(discover_accounts(), separators=(",", ":")))
+    return
   print(json.dumps(build_status(args), separators=(",", ":")))
 
 

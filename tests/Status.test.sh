@@ -857,18 +857,82 @@ jq -e --argjson resume_at "$resume_at" '.resumeAt == $resume_at' \
 # The value becomes a systemd unit name passed to systemctl as a positional
 # argument, so it is validated at least as strictly as a service name.
 for bad_unit in 'bad/unit' 'unit with space' '../escape' \
-                'omaonedrive-resume.timer' 'omaonedrive-resume.service' \
-                '-Mguest' '-Hsomewhere.example.com' \
                 "$(python3 -c 'print("u" * 260)')"; do
   if python3 "$root/onedrive-status.py" --resume-unit "$bad_unit" >/dev/null 2>&1; then
     echo "invalid resume unit unexpectedly passed: $bad_unit" >&2
     exit 1
   fi
 done
-# A leading dash is refused on the service gate too: systemctl would read
-# "-Mguest.service" as its --machine option rather than a unit name.
-if python3 "$root/onedrive-status.py" --service '-Mguest.service' >/dev/null 2>&1; then
-  echo "option-shaped service name unexpectedly passed" >&2
+
+# Option-shaped names MUST be spelled with "=" here. In the two-token form
+# argparse rejects them itself ("expected one argument") before either validator
+# runs, so the assertion would pass even if the first-character restriction were
+# removed -- which is exactly the regression it exists to catch.
+for option_shaped in '--resume-unit=-Mguest' '--resume-unit=-Hsomewhere.example.com' \
+                     '--service=-Mguest.service' '--service=-Hsomewhere.example.com.service'; do
+  if python3 "$root/onedrive-status.py" "$option_shaped" >/dev/null 2>&1; then
+    echo "option-shaped unit name unexpectedly passed: $option_shaped" >&2
+    exit 1
+  fi
+done
+# Prove the guard is the validator and not argparse: the same spelling with a
+# leading character that is legal does reach the helper and succeeds.
+python3 "$root/onedrive-status.py" --resume-unit=omaonedrive-resume --limit 5 >/dev/null
+
+# A bare name whose instance legitimately ends in ".timer" must NOT be refused --
+# systemd-escape produces such names -- and a caller-supplied ".timer" suffix is
+# normalised rather than doubled.
+python3 - "$root/onedrive-status.py" <<'SUFFIX_PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("omaonedrive_status", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+assert module.valid_resume_unit("omaonedrive-resume@team.service")
+assert module.valid_resume_unit("omaonedrive-resume@foo.timer")
+assert module.valid_resume_unit("omaonedrive-resume.timer")
+assert module.resume_unit_name("omaonedrive-resume.timer") == "omaonedrive-resume"
+assert module.resume_unit_name("omaonedrive-resume") == "omaonedrive-resume"
+assert not module.valid_resume_unit("-Mguest")
+assert not module.valid_resume_unit("bad/unit")
+assert not module.valid_resume_unit("u" * 260)
+# The service gate carries the same length rule, not just the same characters.
+assert not module.SERVICE_NAME_PATTERN.fullmatch("-Mguest.service")
+assert not module.valid_unit_name("o" * 300, ".service")
+SUFFIX_PY
+
+# A confdir whose own directory name contains " - " must not resolve to a
+# shorter path that merely happens to exist -- that would be another account.
+dashed_parent="$test_home/accounts"
+mkdir -p "$dashed_parent/My" "$dashed_parent/My - Work"
+python3 - "$root/onedrive-status.py" "$dashed_parent" <<'DASHED_PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("omaonedrive_status", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+parent = sys.argv[2]
+assert module.confdir_from_argv(
+  "/usr/bin/onedrive --monitor --confdir=" + parent + "/My - Work"
+) == parent + "/My - Work"
+# A real trailing flag still never forms an existing path.
+assert module.confdir_from_argv(
+  "/usr/bin/onedrive --confdir=" + parent + "/My --monitor"
+) == parent + "/My"
+DASHED_PY
+
+# --list-accounts must not be a validation bypass: the same values it would
+# accept there are rejected in status mode.
+if python3 "$root/onedrive-status.py" --list-accounts --confdir relative/path >/dev/null 2>&1; then
+  echo "--list-accounts accepted an invalid confdir" >&2
+  exit 1
+fi
+if python3 "$root/onedrive-status.py" --list-accounts '--service=-Mguest.service' >/dev/null 2>&1; then
+  echo "--list-accounts accepted an option-shaped service name" >&2
   exit 1
 fi
 

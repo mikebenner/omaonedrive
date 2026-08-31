@@ -20,9 +20,9 @@ leave sync paused unexpectedly.
 `onedrive-status.py` reads:
 
 - the account's `config` file, every `name = value` line of it, and the
-  effective `sync_dir` from that file and from `onedrive --display-config`; an
-  account whose config cannot be read reports no sync directory at all rather
-  than falling back to another account's;
+  effective `sync_dir` from that file and from `onedrive --display-config`; when
+  neither yields one, the default account falls back to `~/OneDrive` and every
+  other account reports no sync directory at all rather than borrowing that;
 - presence (never contents) of the CLI's `refresh_token` file;
 - effective two-way, download-only, or upload-only mode from the same two
   sources;
@@ -46,19 +46,26 @@ leave sync paused unexpectedly.
   or `~/.config/systemd/user`, and `$XDG_RUNTIME_DIR/systemd/user` when that
   variable is set) and system (`/run/systemd/user`, `/etc/systemd/user`,
   `/usr/lib/systemd/user`) unit directories — or, when `OMAONEDRIVE_UNIT_ROOTS`
-  is set, the colon-separated directories it names *instead* of all of those — so
-  an enabled-but-unloaded instance is still discovered;
+  is set to a non-empty value, the colon-separated directories it names *instead*
+  of all of those — so an enabled-but-unloaded instance is still discovered;
 - whether each candidate config directory exists, including every space-joined
-  prefix of a `--confdir` read out of an `ExecStart`, since systemd renders argv
-  unquoted and the longest existing directory is the intended one.
+  prefix of a `--confdir` read out of an `ExecStart` — systemd renders argv
+  unquoted, so the longest prefix that is a real directory is taken as the
+  intended one, and prefixes are tried even through tokens that look like flags
+  because a directory may legitimately be named `My - Work`;
+- this account's own cached presentation data from a previous run — quota,
+  remote status and the recent-file rows — out of its `status-cache.json`.
 
 `--confdir` selects which account's config directory is read, defaulting to
 `$XDG_CONFIG_HOME/onedrive` or `~/.config/onedrive`; a value must be an absolute
-path containing no control characters, and must not be an existing
+path containing no C0 control character or DEL, and must not be an existing
 non-directory. It reaches the CLI as a single argument. `--service` and
 `--resume-unit` name that account's unit and the bare name of its transient
 resume unit; neither may begin with `-`, because both are passed to `systemctl`
-as positional arguments where such a value would be read as an option. Given a
+as positional arguments where such a value would be read as an option, and both
+are capped at systemd's 255-byte unit-name limit counting the suffix. A
+`--resume-unit` given with a trailing `.timer` is normalised rather than
+refused, so a name whose instance legitimately ends that way still works. Given a
 non-default `--service` with no `--confdir`, the helper reads that unit's own
 config directory rather than describing the default account under another
 account's name; a unit that cannot be resolved is reported as an unknown account
