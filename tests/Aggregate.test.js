@@ -411,3 +411,25 @@ test("nothing is claimed before the first poll", () => {
   assert.deepEqual(Model.barState(null), { active: false, syncing: false, installed: false })
   assert.deepEqual(Model.barState(undefined), { active: false, syncing: false, installed: false })
 })
+
+test("a helper that failed is not reported as a missing client", () => {
+  // A single account that has not reported carries default values, and the
+  // default `installed: false` renders as "OneDrive CLI is not installed" --
+  // sending the user to look for a missing package when the status helper is
+  // what died. That is the ONE-account path; the multi-account branch already
+  // said "Checking N OneDrive accounts…".
+  const before = Model.aggregateTooltip([{ initialized: false }], Date.now())
+  assert.equal(before, "Checking OneDrive…")
+  assert.ok(!before.includes("not installed"), before)
+
+  const failed = Model.aggregateTooltip(
+    [{ initialized: false, attempted: true, lastError: "Could not run the OneDrive status helper" }],
+    Date.now())
+  assert.ok(failed.includes("Could not run the OneDrive status helper"), failed)
+  assert.ok(!failed.includes("not installed"), failed)
+
+  // ...and once it HAS reported, a genuinely missing client is still named.
+  const reallyMissing = Model.aggregateTooltip(
+    [{ initialized: true, attempted: true, installed: false }], Date.now())
+  assert.ok(reallyMissing.includes("not installed"), reallyMissing)
+})

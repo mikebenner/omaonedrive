@@ -363,7 +363,19 @@ function aggregateAccounts(accounts) {
 function aggregateTooltip(accounts, nowMs, maxLines) {
   var list = Array.isArray(accounts) ? accounts : []
   if (list.length === 0) return "Checking OneDrive…"
-  if (list.length === 1) return tooltip(list[0], nowMs)
+  if (list.length === 1) {
+    var only = list[0]
+    // An account that has not reported still carries its default values, and the
+    // default `installed: false` renders as "OneDrive CLI is not installed" --
+    // which sends the user looking for a missing package when what actually
+    // happened is that the status helper could not be run, or timed out. Say
+    // that instead, and only guess at the client when a poll has told us.
+    if (!only || only.initialized !== true) {
+      var why = only && only.attempted === true ? String(only.lastError || "") : ""
+      return why === "" ? "Checking OneDrive…" : "OneDrive status unavailable\n" + why
+    }
+    return tooltip(only, nowMs)
+  }
   var summary = aggregateAccounts(list)
   if (!summary.initialized) return "Checking " + list.length + " OneDrive accounts…"
 
