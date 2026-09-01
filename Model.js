@@ -624,6 +624,58 @@ function cloudDecision(busy, queue, service, mode, active) {
 //
 // `current` is the ordered list of service names already present.
 // Returns { updates: [{index,row}], appends: [row], removes: [index desc] }.
+// --- the IPC account surface -------------------------------------------------
+//
+// These two live here rather than inline in BarWidget.qml because that file
+// cannot be instantiated headless -- it derives from the bar's own BarWidget
+// type -- so logic left inside it is unreachable by any test. Both functions
+// were previously deletable outright without a single assertion failing.
+
+// One row per account, in discovery order, for `omarchy-cmd ... accounts`.
+function accountRows(accounts, selectedService) {
+  var list = accounts || []
+  var rows = []
+  for (var index = 0; index < list.length; index++) {
+    var account = list[index]
+    rows.push({
+      service: String(account.service || ""),
+      instance: String(account.instance || ""),
+      name: String(account.displayName || ""),
+      selected: String(account.service || "") === String(selectedService || ""),
+      status: String(account.statusText || "")
+    })
+  }
+  return rows
+}
+
+// Accept either the full unit name or the bare instance, because a script author
+// reaches for "personal" before "onedrive@personal.service".
+//
+// The full unit name is the unambiguous form, so it is matched across EVERY
+// account before any instance is considered. Scanning account-by-account and
+// testing both keys per account made the answer depend on discovery order: an
+// instance match on the first account would beat an exact unit-name match on the
+// second, and the control would then act on the wrong account.
+//
+// Returns the matched account's service name, or "" when nothing matches.
+function resolveAccountTarget(accounts, target) {
+  var list = accounts || []
+  var wanted = String(target || "")
+  // The plain account's instance IS "", so an unset argument would otherwise
+  // match it and silently retarget every later control at the default account.
+  // (No account key can equal "" today, so this guard cannot currently be
+  // observed failing -- it is here so that stops being an accident.)
+  if (wanted === "") return ""
+  var index
+  for (index = 0; index < list.length; index++) {
+    if (String(list[index].service || "") === wanted) return wanted
+  }
+  for (index = 0; index < list.length; index++) {
+    if (String(list[index].instance || "") === wanted) return String(list[index].service || "")
+  }
+  return ""
+}
+
 function reconcilePlan(current, discovered) {
   var present = Array.isArray(current) ? current : []
   var rows = Array.isArray(discovered) ? discovered : []
@@ -686,6 +738,8 @@ if (typeof module !== "undefined") {
     badgeGlyph: badgeGlyph,
     nextPollIndex: nextPollIndex,
     cloudDecision: cloudDecision,
+    accountRows: accountRows,
+    resolveAccountTarget: resolveAccountTarget,
     reconcilePlan: reconcilePlan,
     filePath: filePath
   }

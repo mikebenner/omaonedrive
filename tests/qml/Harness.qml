@@ -56,6 +56,40 @@ Item {
     return JSON.stringify(base)
   }
 
+  // Every detached command issued so far whose argv contains `text`. Tests clear
+  // Quickshell.detached first, so this reads as "what did THIS action launch".
+  function detachedWith(text) {
+    var hits = []
+    for (var i = 0; i < Quickshell.detached.length; i++) {
+      var command = (Quickshell.detached[i] || []).join(" ")
+      if (command.indexOf(text) !== -1) hits.push(command)
+    }
+    return hits
+  }
+
+  // Live processes are reused objects, not new registrations, so a control or
+  // status command is only observable while it is running -- read it in the same
+  // tick that started it.
+  function liveWith(text) {
+    var hits = []
+    var live = Quickshell.running()
+    for (var i = 0; i < live.length; i++) {
+      var command = (live[i].command || []).join(" ")
+      if (command.indexOf(text) !== -1) hits.push(command)
+    }
+    return hits
+  }
+
+  // Finish every live process, so an action that chains through one (a resume
+  // timer cancel before the control call) can reach its next stage.
+  function drain(payload) {
+    var live = Quickshell.running()
+    for (var i = 0; i < live.length; i++) {
+      var command = (live[i].command || []).join(" ")
+      live[i].finish(0, command.indexOf("onedrive-status.py") === -1 ? "" : payload)
+    }
+  }
+
   // Finish whichever status process is running for a given service.
   function finishStatus(service, payload, exitCode) {
     var live = Quickshell.running()
@@ -468,7 +502,331 @@ Item {
           harness.streamTicks + " events over ~" + (harness.streamTicks * 60) + "ms)")
       }
 
-      else if (s >= 45) {
+
+      // ---------------------------------------------------------------------
+      // Every panel and IPC control acts on the SELECTED account. Neutering any
+      // one of Service's sixteen facade functions -- pause, resume, login,
+      // reauthenticate, repairResync, openFolder, checkQuota, checkFullStatus --
+      // left this harness green, which is the same blind spot the delegate
+      // property-shadowing bug hid in: the command was built correctly and sent
+      // to the wrong account.
+      else if (s === 45) {
+        console.log("panel controls act on the selected account, and only on it")
+        svc.applyDiscovery([
+          { service: "onedrive@a.service", instance: "a", confdir: "/c/a", description: "A" },
+          { service: "onedrive@b.service", instance: "b", confdir: "/c/b", description: "B" }
+        ])
+        harness.drain(harness.statusPayload({}))
+      }
+
+      // Give the two accounts DISTINCT observable state, so a command carrying
+      // the wrong account's identity cannot look like the right one.
+      else if (s === 46 || s === 47) {
+        svc.pollNextAccount()
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({
+          syncDir: "/d/a", running: true, activeState: "active" }))
+        // B is stopped: reauthenticate() and repairResync() both refuse a running
+        // account, so the fixture has to make those paths reachable at all.
+        harness.finishStatus("onedrive@b.service", harness.statusPayload({
+          syncDir: "/d/b", running: false, activeState: "inactive" }))
+      }
+
+      else if (s === 48) {
+        svc.selectAccount("onedrive@b.service", false)
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/b", running: false, activeState: "inactive" }))
+        harness.check(svc.selectedAccount.service === "onedrive@b.service",
+          "B is selected")
+        harness.check(svc.accounts[0].service === "onedrive@a.service",
+          "...and is NOT the first account, so 'always account 0' cannot pass")
+
+        Quickshell.detached = []
+        svc.login()
+        harness.check(harness.detachedWith("--confdir /c/b").length === 1,
+          "login opens the selected account's config directory")
+        harness.check(harness.detachedWith("/c/a").length === 0,
+          "...and never the other account's")
+
+        Quickshell.detached = []
+        svc.reauthenticate()
+        harness.check(harness.detachedWith("--confdir /c/b --reauth").length === 1,
+          "reauthentication targets the selected account")
+        harness.check(harness.detachedWith("/c/a").length === 0,
+          "...and never the other account's")
+
+        Quickshell.detached = []
+        svc.repairResync()
+        harness.check(harness.detachedWith("--confdir /c/b --sync --resync").length === 1,
+          "resync repair targets the selected account")
+        harness.check(harness.detachedWith("/c/a").length === 0,
+          "...and never the other account's -- a resync on the wrong account " +
+          "deletes and re-downloads the wrong drive")
+
+        Quickshell.detached = []
+        svc.openFolder()
+        harness.check(harness.detachedWith("xdg-open /d/b").length === 1,
+          "Open folder opens the selected account's sync directory")
+        harness.check(harness.detachedWith("/d/a").length === 0,
+          "...and never the other account's")
+      }
+
+      // The discriminating half: flip the selection and prove the commands
+      // FOLLOW it. Without this, hard-coding account B passes every check above.
+      else if (s === 49) {
+        svc.selectAccount("onedrive@a.service", false)
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/a", running: true, activeState: "active" }))
+        harness.check(svc.selectedAccount.service === "onedrive@a.service",
+          "the selection moved to A")
+
+        Quickshell.detached = []
+        svc.login()
+        harness.check(harness.detachedWith("--confdir /c/a").length === 1,
+          "login follows the selection to the other account")
+        harness.check(harness.detachedWith("/c/b").length === 0,
+          "...and leaves the previously selected account alone")
+
+        Quickshell.detached = []
+        svc.openFolder()
+        harness.check(harness.detachedWith("xdg-open /d/a").length === 1,
+          "Open folder follows the selection too")
+        harness.check(harness.detachedWith("/d/b").length === 0,
+          "...and not the previously selected account's directory")
+      }
+
+      else if (s === 50) {
+        console.log("cloud checks name the selected account in the command itself")
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@b.service", false)
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/b", running: false, activeState: "inactive" }))
+        svc.checkQuota()
+        var quota = harness.liveWith("--quota")
+        harness.check(quota.length === 1, "exactly one quota check is in flight")
+        harness.check(quota.length === 1
+          && quota[0].indexOf("--service onedrive@b.service") !== -1
+          && quota[0].indexOf("--confdir /c/b") !== -1,
+          "the quota check carries the selected account's service AND confdir")
+        harness.check(quota.length === 1 && quota[0].indexOf("/c/a") === -1,
+          "...and nothing belonging to the other account")
+      }
+
+      else if (s === 51) {
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@a.service", false)
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/a", running: true, activeState: "active" }))
+        svc.checkFullStatus()
+        var full = harness.liveWith("--sync-status")
+        harness.check(full.length === 1, "exactly one sync-status check is in flight")
+        harness.check(full.length === 1
+          && full[0].indexOf("--service onedrive@a.service") !== -1
+          && full[0].indexOf("--confdir /c/a") !== -1,
+          "the full check follows the selection to the other account")
+        harness.check(full.length === 1 && full[0].indexOf("/c/b") === -1,
+          "...and carries nothing belonging to the previously selected account")
+        harness.drain(harness.statusPayload({}))
+      }
+
+      // Pause and resume are the two that reach systemd. Each chains a resume-
+      // timer cancel before the control call, and BOTH halves must name the same
+      // account -- cancelling the wrong timer strands the other account's pause.
+      else if (s === 52) {
+        console.log("pause and resume reach the selected account's own units")
+        svc.selectAccount("onedrive@b.service", false)
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/b", running: false, activeState: "inactive" }))
+        svc.resume()
+        harness.check(harness.liveWith("omaonedrive-resume@b").length === 1,
+          "resume first cancels the selected account's OWN resume timer")
+        harness.check(harness.liveWith("omaonedrive-resume@a").length === 0,
+          "...and not the other account's, which would strand its pause")
+        harness.drain("")
+      }
+
+      else if (s === 53) {
+        var starts = harness.liveWith("systemctl --user start")
+        harness.check(starts.length === 1
+          && starts[0].indexOf("onedrive@b.service") !== -1,
+          "...and then starts the selected account's unit")
+        harness.check(harness.liveWith("start onedrive@a.service").length === 0,
+          "...leaving the other account's unit untouched")
+        harness.drain("")
+      }
+
+      else if (s === 54) {
+        svc.selectAccount("onedrive@a.service", false)
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/a", running: true, activeState: "active" }))
+        svc.pause()
+        harness.check(harness.liveWith("omaonedrive-resume@a").length === 1,
+          "pause cancels the selected account's own resume timer")
+        harness.check(harness.liveWith("omaonedrive-resume@b").length === 0,
+          "...and not the other account's")
+        harness.drain("")
+      }
+
+      else if (s === 55) {
+        var stops = harness.liveWith("systemctl --user stop onedrive@a.service")
+        harness.check(stops.length === 1,
+          "...and then stops the selected account's unit")
+        harness.check(harness.liveWith("stop onedrive@b.service").length === 0,
+          "...leaving the other account running")
+        harness.drain("")
+      }
+
+
+      // ---------------------------------------------------------------------
+      // The remaining facade functions. Each of these could be replaced with an
+      // empty body and this harness stayed green: the refresh test below only
+      // asserted the NEGATIVE case (that a refresh during a poll starts nothing),
+      // which an empty body satisfies perfectly; and the timed pause was driven
+      // on the Account directly, never through the coordinator the panel calls.
+      else if (s === 56) {
+        console.log("the facade actually does the thing, not just refuse to")
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@b.service", false)
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/b", running: false, activeState: "inactive" }))
+        harness.check(harness.runningStatusServices().length === 0,
+          "nothing is polling, so a refresh has no excuse to do nothing")
+        svc.refresh(false)
+        harness.check(harness.runningStatusServices().length === 1,
+          "an idle facade refresh DOES start a poll")
+        harness.check(harness.runningStatusServices()[0] === "onedrive@b.service",
+          "...for the selected account")
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/b", running: false, activeState: "inactive" }))
+      }
+
+      // The panel's "Pause for N" menu calls the COORDINATOR, not the account.
+      else if (s === 57) {
+        svc.selectAccount("onedrive@b.service", false)
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/b", running: true, activeState: "active" }))
+        svc.pauseFor(60)
+        harness.check(harness.liveWith("omaonedrive-resume@b").length === 1,
+          "a timed pause cancels the selected account's existing timer first")
+        harness.drain("")
+      }
+
+      else if (s === 58) {
+        harness.check(harness.liveWith("systemctl --user stop onedrive@b.service").length === 1,
+          "...then stops the selected account's unit")
+        harness.drain("")
+      }
+
+      else if (s === 59) {
+        var scheduled = harness.liveWith("systemd-run")
+        harness.check(scheduled.length === 1, "...and schedules exactly one resume timer")
+        harness.check(scheduled.length === 1
+          && scheduled[0].indexOf("--unit=omaonedrive-resume@b") !== -1,
+          "the timer is the selected account's own unit")
+        harness.check(scheduled.length === 1
+          && scheduled[0].indexOf("--on-active=60m") !== -1,
+          "...for the duration the menu asked for, not a default")
+        harness.check(scheduled.length === 1
+          && scheduled[0].indexOf("start onedrive@b.service") !== -1,
+          "...and on expiry it starts the account it paused, not another")
+        harness.check(scheduled.length === 1 && scheduled[0].indexOf("@a") === -1,
+          "nothing in the schedule names the other account")
+        harness.drain("")
+      }
+
+      // The bar's own click. It has to read the CURRENT state to pick a
+      // direction: a toggle that always pauses is indistinguishable from a
+      // correct one until you click it twice.
+      else if (s === 60) {
+        console.log("the bar toggle picks its direction from the account's state")
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@a.service", false)
+        // Step 54 paused A, so its optimistic desired state is still "stopped"
+        // and will stay so until a poll agrees. Let one poll agree, then bring it
+        // back up -- otherwise `active` is false and this would be testing the
+        // resume direction twice.
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/a", running: false, activeState: "inactive" }))
+        svc.refresh(false)
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/a", running: true, activeState: "active" }))
+        harness.check(svc.selectedAccount.active === true,
+          "A is running, so the toggle must choose to STOP it")
+        svc.toggleRunning()
+        harness.drain("")
+      }
+
+      else if (s === 61) {
+        harness.check(harness.liveWith("systemctl --user stop onedrive@a.service").length === 1,
+          "toggling a running account stops it")
+        harness.drain("")
+      }
+
+      else if (s === 62) {
+        svc.selectAccount("onedrive@b.service", false)
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/b", running: false, activeState: "inactive" }))
+        harness.check(svc.selectedAccount.active === false, "B is stopped")
+        svc.toggleRunning()
+        harness.drain("")
+      }
+
+      else if (s === 63) {
+        harness.check(harness.liveWith("systemctl --user start onedrive@b.service").length === 1,
+          "toggling a stopped account starts it -- the same call, the other way")
+        harness.drain("")
+      }
+
+      else if (s === 64) {
+        console.log("openWeb and openFile")
+        Quickshell.detached = []
+        svc.openWeb()
+        harness.check(harness.detachedWith("xdg-open https://onedrive.live.com/").length === 1,
+          "Open on the web launches the OneDrive site")
+        Quickshell.detached = []
+        svc.openFile({ path: "/d/b/Some Folder/a file.txt" })
+        harness.check(harness.detachedWith("nautilus --select").length === 1,
+          "Open file reveals the file in the file manager")
+        harness.check(
+          harness.detachedWith("file:///d/b/Some%20Folder/a%20file.txt").length === 1,
+          "...with the path percent-encoded, so a space does not truncate it")
+        harness.check(harness.detachedWith("file:///d/b/Some Folder").length === 0,
+          "...and never as a raw path")
+        Quickshell.detached = []
+        svc.openFile(null)
+        harness.check(Quickshell.detached.length === 0,
+          "a missing file launches nothing")
+      }
+
+      // The cloud semaphore's release half. A queued check must actually run
+      // when the one in flight finishes -- otherwise the second account's storage
+      // figure never arrives and the panel shows "Not checked" forever.
+      else if (s === 65) {
+        console.log("a queued cloud check runs when the slot frees")
+        harness.drain(harness.statusPayload({}))
+        svc.accounts[0].checkQuota()
+        svc.accounts[1].checkQuota()
+        var live = harness.liveWith("--quota")
+        harness.check(live.length === 1, "only one cloud check runs at a time")
+        harness.check(live[0].indexOf("--confdir /c/a") !== -1,
+          "the first request is the one in flight")
+        harness.drain(harness.statusPayload({}))
+      }
+
+      else if (s === 66) {
+        var second = harness.liveWith("--quota")
+        harness.check(second.length === 1,
+          "the queued check starts once the slot frees, rather than being dropped")
+        harness.check(second.length === 1 && second[0].indexOf("--confdir /c/b") !== -1,
+          "...and it is the account that was waiting, with its own confdir")
+        harness.drain(harness.statusPayload({}))
+      }
+
+      else if (s === 67) {
+        harness.check(harness.liveWith("--quota").length === 0,
+          "the queue is then empty -- a drained entry is not re-run forever")
+      }
+
+      else if (s >= 68) {
         console.log(harness.failures === 0
           ? "QML harness: all checks passed"
           : "QML harness: " + harness.failures + " FAILED")
