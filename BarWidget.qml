@@ -204,7 +204,13 @@ BarWidget {
         }
       }
     }
+    // Every gesture points at the account the badge is about before acting.
+    // Only left-click did, so middle-click opened the folder of whichever
+    // account happened to be selected -- at cold boot, the first discovered one
+    // -- while the badge was about another, and right-click spent the single
+    // 30-second cloud slot on the wrong account.
     onPressed: function(buttonCode) {
+      if (root.service) root.service.selectBadgedAccount()
       if (buttonCode === Qt.RightButton && root.service) root.service.checkQuota()
       else if (buttonCode === Qt.MiddleButton && root.service) root.service.openFolder()
       else root.togglePanel()

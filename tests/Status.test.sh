@@ -796,7 +796,7 @@ fi
 default_cache="$XDG_STATE_HOME/omarchy/io.github.salemsayed.omaonedrive/status-cache.json"
 cat >"$default_cache" <<'JSON'
 {"scanLimit":"not-a-number","scanAt":"also-bad","usedBytes":null,"quotaBytes":[],
- "quotaCheckedTs":"x","remoteStatus":"Not checked","files":[]}
+ "quotaCheckedTs":1e999,"remoteStatus":"Not checked","files":[]}
 JSON
 python3 "$root/onedrive-status.py" --limit 5 >"$test_root/badcache.json" || {
   echo "a malformed cache value killed the helper" >&2
@@ -807,6 +807,34 @@ jq -e '.ok == true and .usedBytes == 0 and .quotaBytes == 0 and .quotaCheckedTs 
   echo "a malformed cache was not treated as absent" >&2
   exit 1
 }
+# JSON's 1e999 parses to float infinity, which int() refuses with OverflowError
+# rather than ValueError -- a different exception through the same fatal door.
+jq -e '.quotaCheckedTs == 0' "$test_root/badcache.json" >/dev/null || {
+  echo "an infinite cache value was not treated as absent" >&2
+  exit 1
+}
+# A truncated write -- the ordinary way this file goes wrong, on a full disk or
+# a hard poweroff -- must also be survivable.
+printf '{"usedBytes": 12' >"$default_cache"
+python3 "$root/onedrive-status.py" --limit 5 >"$test_root/truncated.json" || {
+  echo "a truncated cache killed the helper" >&2
+  exit 1
+}
+jq -e '.ok == true and .usedBytes == 0' "$test_root/truncated.json" >/dev/null || {
+  echo "a truncated cache was not discarded" >&2
+  exit 1
+}
+# ...and a cache that is valid JSON but not an object at all.
+printf '["not", "an", "object"]' >"$default_cache"
+python3 "$root/onedrive-status.py" --limit 5 >/dev/null || {
+  echo "a non-object cache killed the helper" >&2
+  exit 1
+}
+
+cat >"$default_cache" <<'JSON'
+{"scanLimit":"not-a-number","scanAt":"also-bad","files":[]}
+JSON
+python3 "$root/onedrive-status.py" --limit 5 >/dev/null
 # ...and the next write repairs it, rather than leaving the bad value to be
 # re-read for ever.
 jq -e '(.scanLimit | type) == "number" and (.scanAt | type) == "number"' \

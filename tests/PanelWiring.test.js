@@ -16,17 +16,34 @@ const test = require("node:test")
 // to it. That makes them brittle by design: if you change the wiring, change the
 // expectation below, and the diff will say what the bar's behaviour now is.
 
+function occurrences(text, needle) {
+  let count = 0
+  let at = text.indexOf(needle)
+  while (at !== -1) {
+    count += 1
+    at = text.indexOf(needle, at + needle.length)
+  }
+  return count
+}
+
 const root = path.join(__dirname, "..")
 const barWidget = readFileSync(path.join(root, "BarWidget.qml"), "utf8")
 const panel = readFileSync(path.join(root, "Panel.qml"), "utf8")
 
 // Comments are stripped so wording changes do not break the test; everything
 // else -- including an added `if (false)` or an early return -- does.
+//
+// Both markers must be UNIQUE. A reviewer defeated an earlier version of this
+// by adding a string property containing the expected text: indexOf found the
+// decoy, the comparison passed, and the live wiring below it was wrong.
 function code(source, from, to) {
+  assert.equal(occurrences(source, from), 1,
+    "marker is not unique, so this test can be spoofed: " + from)
   const start = source.indexOf(from)
-  assert.notEqual(start, -1, "could not find: " + from)
   const end = source.indexOf(to, start + from.length)
   assert.notEqual(end, -1, "could not find: " + to)
+  assert.equal(occurrences(source.slice(start), to), 1,
+    "end marker is not unique after the start: " + to)
   return source
     .slice(start, end)
     .split("\n")
@@ -85,4 +102,50 @@ test("opening the panel selects the badged account first, then refreshes", () =>
     code(panel, "function open() {", "Qt.callLater"),
     'function open() { root.controller.show() oneDrive.selectBadgedAccount() ' +
     'oneDrive.refreshSelected() oneDrive.retryStaleQuotaOnOpen()')
+})
+
+test("every IPC control routes to the coordinator, and none of them to another one", () => {
+  // A reviewer changed IPC `resync()` to call pause() and the whole suite stayed
+  // green: only five hand-picked regions were pinned, and this was not one. The
+  // fix is to pin the WHOLE handler -- fourteen one-line delegations, each of
+  // which is a command a script can run against the user's real account.
+  const handler = code(barWidget, "IpcHandler {", "\n  }\n\n  BarIconButton")
+  assert.equal(handler,
+    'IpcHandler { enabled: root.ipcRegistrationReady target: root.moduleName ' +
+    'function open(): void { root.open() } ' +
+    'function close(): void { root.close() } ' +
+    'function show(): void { root.open() } ' +
+    'function hide(): void { root.close() } ' +
+    'function toggle(): void { root.togglePanel() } ' +
+    'function refresh(): string { if (root.service) root.service.refresh(false) return "ok" } ' +
+    'function check(): string { if (root.service) root.service.checkQuota() return "ok" } ' +
+    'function fullStatus(): string { if (root.service) root.service.checkFullStatus() return "ok" } ' +
+    'function pause(): string { if (root.service) root.service.pause() return "ok" } ' +
+    'function pauseFor(minutes: int): string { if (root.service) root.service.pauseFor(minutes) return "ok" } ' +
+    'function resume(): string { if (root.service) root.service.resume() return "ok" } ' +
+    'function toggleSync(): string { if (root.service) root.service.toggleRunning() return "ok" } ' +
+    'function folder(): string { if (root.service) root.service.openFolder() return "ok" } ' +
+    'function web(): string { if (root.service) root.service.openWeb() return "ok" } ' +
+    'function resync(): string { if (root.service) root.service.repairResync() return "ok" } ' +
+    'function status(): string { return root.service ? root.service.statusText : "Checking…" } ' +
+    'function accounts(): string { if (!root.service) return "[]" ' +
+    'return JSON.stringify(Model.accountRows(root.service.accounts, root.service.selectedService)) } ' +
+    'function selectAccount(target: string): string { if (!root.service) return "no accounts" ' +
+    'var found = Model.resolveAccountTarget(root.service.accounts, target) ' +
+    'if (found === "") return "unknown account: " + target ' +
+    'root.service.selectAccount(found, false) return "ok" }')
+})
+
+test("every bar gesture points at the badged account before acting", () => {
+  // Left-click was fixed; middle-click and right-click were not, so middle-click
+  // opened the folder of whichever account happened to be selected -- at cold
+  // boot, the first discovered one -- while the badge was about another, and
+  // right-click spent the single 30-second cloud slot on the wrong account.
+  assert.equal(
+    code(barWidget, "onPressed: function(buttonCode) {", "\n    }\n  }\n}"),
+    'onPressed: function(buttonCode) { ' +
+    'if (root.service) root.service.selectBadgedAccount() ' +
+    'if (buttonCode === Qt.RightButton && root.service) root.service.checkQuota() ' +
+    'else if (buttonCode === Qt.MiddleButton && root.service) root.service.openFolder() ' +
+    'else root.togglePanel()')
 })

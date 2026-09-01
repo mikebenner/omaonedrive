@@ -58,6 +58,25 @@ Item {
     return JSON.stringify(base)
   }
 
+  // The argv of the notify-send this burst produced, whether it was launched
+  // detached (no action) or as a tracked process (with one).
+  function notifySent() {
+    var hits = harness.detachedWith("notify-send")
+    var live = harness.liveWith("notify-send")
+    return hits.concat(live)
+  }
+
+  // Complete a tracked notify-send as if the user clicked its action button.
+  function clickNotification() {
+    var live = Quickshell.running()
+    for (var i = 0; i < live.length; i++) {
+      if ((live[i].command || []).indexOf("notify-send") !== -1) {
+        return live[i].finish(0, "default")
+      }
+    }
+    return false
+  }
+
   // Every detached command issued so far whose argv contains `text`. Tests clear
   // Quickshell.detached first, so this reads as "what did THIS action launch".
   function detachedWith(text) {
@@ -1704,7 +1723,257 @@ Item {
         harness.check(svc.accounts[0].initialized === true, "...and reports")
       }
 
-      else if (s >= 149) {
+
+      // ---------------------------------------------------------------------
+      // Which conditions RAISE a notification, and what clicking one does. A
+      // condition sweep -- invert each `if` in turn -- found every one of these
+      // could be flipped with the harness green: the account could have reported
+      // "recovered" for a failure and stayed silent for a resync, and the repair
+      // button could have done nothing.
+      else if (s === 149) {
+        console.log("notification edges: each condition raises its own event")
+        svc.applyDiscovery([
+          { service: "onedrive@a.service", instance: "a", confdir: "/c/a", description: "A" }
+        ])
+        harness.drain(harness.statusPayload({ confdir: "/c/a" }))
+        Quickshell.detached = []
+      }
+
+      else if (s === 150) {
+        // Healthy first, so every latch starts clear and the baseline is sent.
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({ confdir: "/c/a" }))
+        svc.flushTransitions()
+        Quickshell.detached = []
+        harness.drain("")
+      }
+
+      else if (s === 151) {
+        svc.accounts[0].refresh(false)
+        // A resync-required account has stopped syncing -- and repairResync
+        // refuses a running one, so a fixture that leaves it running would test
+        // the click against a guard rather than against the wiring.
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({
+          confdir: "/c/a", resyncRequired: true, serviceFailed: true,
+          running: false, activeState: "inactive" }))
+        svc.flushTransitions()
+        var resync = harness.notifySent()
+        harness.check(resync.length === 1, "a new resync requirement notifies once")
+        harness.check(resync.length === 1 && resync[0].indexOf("needs a resync") !== -1,
+          "...as a resync, not as the failure it also sets: " + (resync[0] || ""))
+        harness.check(resync.length === 1 && resync[0].indexOf("--action=default=Run resync repair") !== -1,
+          "...offering the repair as its button: " + (resync[0] || ""))
+      }
+
+      else if (s === 152) {
+        // Clicking "Run resync repair" must actually run it.
+        Quickshell.detached = []
+        harness.check(harness.clickNotification(), "the notification is clickable")
+        harness.check(harness.detachedWith("--sync --resync").length === 1,
+          "clicking the repair action runs the resync for that account")
+        harness.check(harness.detachedWith("--confdir /c/a").length === 1,
+          "...against its own config directory")
+        harness.drain("")
+      }
+
+      else if (s === 153) {
+        // A repeat of the same condition is NOT a new edge.
+        Quickshell.detached = []
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({
+          confdir: "/c/a", resyncRequired: true, serviceFailed: true,
+          running: false, activeState: "inactive" }))
+        svc.flushTransitions()
+        harness.check(harness.notifySent().length === 0,
+          "the same condition on the next poll does not notify again")
+        harness.drain("")
+      }
+
+      else if (s === 154) {
+        // ...and clearing it reports a recovery, exactly once.
+        Quickshell.detached = []
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({ confdir: "/c/a" }))
+        svc.flushTransitions()
+        var back = harness.notifySent()
+        harness.check(back.length === 1 && back[0].indexOf("recovered") !== -1,
+          "clearing it reports a recovery: " + (back[0] || ""))
+        harness.drain("")
+      }
+
+      else if (s === 155) {
+        Quickshell.detached = []
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({ confdir: "/c/a" }))
+        svc.flushTransitions()
+        harness.check(harness.notifySent().length === 0,
+          "...and a second healthy poll does not report recovering again")
+        harness.drain("")
+      }
+
+      else if (s === 156) {
+        // Reauthentication is its own edge, independent of the failure ones.
+        Quickshell.detached = []
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({
+          confdir: "/c/a", reauthRequired: true }))
+        svc.flushTransitions()
+        var auth = harness.notifySent()
+        harness.check(auth.length === 1 && auth[0].indexOf("reauthentication") !== -1,
+          "a new reauthentication requirement notifies: " + (auth[0] || ""))
+      }
+
+      else if (s === 157) {
+        // Clicking a non-repair notification opens the panel on that account.
+        svc.selectedService = ""
+        harness.check(harness.clickNotification(), "the notification is clickable")
+        harness.check(svc.selectedService === "onedrive@a.service",
+          "clicking it selects the account the notification was about")
+        harness.drain("")
+      }
+
+      else if (s === 158) {
+        Quickshell.detached = []
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({ confdir: "/c/a" }))
+        svc.flushTransitions()
+        harness.drain("")
+      }
+
+      else if (s === 159) {
+        // A plain service failure, with no resync required, is its own edge.
+        Quickshell.detached = []
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({
+          confdir: "/c/a", serviceFailed: true, lastError: "unit entered failed state" }))
+        svc.flushTransitions()
+        var failed = harness.notifySent()
+        harness.check(failed.length === 1 && failed[0].indexOf("sync failed") !== -1,
+          "a service failure notifies: " + (failed[0] || ""))
+        harness.check(failed.length === 1 && failed[0].indexOf("unit entered failed state") !== -1,
+          "...carrying the error systemd reported")
+        harness.drain("")
+      }
+
+      else if (s === 160) {
+        Quickshell.detached = []
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({ confdir: "/c/a" }))
+        svc.flushTransitions()
+        harness.drain("")
+      }
+
+      else if (s === 161) {
+        // Storage is a threshold, not a state: it latches on the way up only.
+        Quickshell.detached = []
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({
+          confdir: "/c/a", quotaKnown: true, quotaBytes: 1000, usedBytes: 970 }))
+        svc.flushTransitions()
+        var full = harness.notifySent()
+        harness.check(full.length === 1 && full[0].indexOf("almost full") !== -1,
+          "crossing the storage threshold notifies: " + (full[0] || ""))
+        harness.drain("")
+      }
+
+      else if (s === 162) {
+        Quickshell.detached = []
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({
+          confdir: "/c/a", quotaKnown: true, quotaBytes: 1000, usedBytes: 980 }))
+        svc.flushTransitions()
+        harness.check(harness.notifySent().length === 0,
+          "...and staying over it does not notify again")
+        harness.drain("")
+      }
+
+      // Discovery failing outright must leave the widget with the one account it
+      // had before this branch existed, not with none.
+      else if (s === 163) {
+        console.log("discovery that fails leaves the single-account fallback")
+        svc.applyDiscovery([])
+        harness.check(svc.accountCount === 1 && svc.accounts[0].service === "onedrive.service",
+          "an empty discovery falls back to the plain service")
+        harness.drain(harness.statusPayload({}))
+      }
+
+
+      // ---------------------------------------------------------------------
+      // Polls have a watchdog; the three control processes did not. `pause()`
+      // refuses while `busy`, and `busy` is true for as long as one of these
+      // runs -- so a `systemctl --user stop` that never exits (the user bus not
+      // back yet after a suspend) left that account's Pause and Resume dead for
+      // the rest of the session.
+      else if (s === 164) {
+        console.log("a control that never exits does not kill Pause for the session")
+        svc.settings = ({ refreshIntervalSec: 10, recentFileLimit: 5,
+                          notifications: true, statusTimeoutMs: 200 })
+        svc.applyDiscovery([
+          { service: "onedrive@a.service", instance: "a", confdir: "/c/a", description: "A" }
+        ])
+        harness.drain(harness.statusPayload({ confdir: "/c/a" }))
+      }
+
+      else if (s === 165) {
+        harness.drain(harness.statusPayload({
+          confdir: "/c/a", running: true, activeState: "active" }))
+        svc.selectAccount("onedrive@a.service", false)
+        harness.drain(harness.statusPayload({
+          confdir: "/c/a", running: true, activeState: "active" }))
+        svc.pause()
+        harness.check(harness.liveWith("omaonedrive-resume@a").length === 1,
+          "the resume-timer cancel is in flight")
+        harness.check(svc.accounts[0].busy === true, "...and the account is busy")
+        // It never exits.
+      }
+
+      else if (s >= 166 && s <= 169) { /* let the watchdog run */ }
+
+      else if (s === 170) {
+        harness.check(harness.liveWith("omaonedrive-resume@a").length === 0,
+          "the watchdog gives up on the wedged cancel")
+        harness.check(harness.liveWith("systemctl --user stop onedrive@a.service").length === 1,
+          "...and lets the pause it precedes go ahead anyway")
+        harness.drain("")
+      }
+
+      else if (s === 171) {
+        harness.check(svc.accounts[0].busy === false,
+          "the account is usable again rather than stuck busy for the session")
+        harness.drain(harness.statusPayload({
+          confdir: "/c/a", running: false, activeState: "inactive" }))
+      }
+
+      else if (s === 172) {
+        // ...and a control that hangs is abandoned too, so the next one can run.
+        svc.accounts[0].refresh(false)
+        harness.drain(harness.statusPayload({
+          confdir: "/c/a", running: true, activeState: "active" }))
+        svc.pause()
+        harness.drain("")
+      }
+
+      else if (s === 173) {
+        harness.check(harness.liveWith("systemctl --user stop onedrive@a.service").length === 1,
+          "a stop is in flight")
+        // ...and never exits.
+      }
+
+      else if (s >= 174 && s <= 177) { /* let the watchdog run */ }
+
+      else if (s === 178) {
+        harness.check(harness.liveWith("systemctl --user stop").length === 0,
+          "the watchdog gives up on the wedged control")
+        harness.check(svc.accounts[0].busy === false, "...and the account is usable again")
+        harness.check(svc.accounts[0].active === true,
+          "...without claiming a pause that never happened")
+        harness.check(svc.accounts[0].lastError !== "",
+          "...and saying the command failed: " + svc.accounts[0].lastError)
+        svc.settings = ({ refreshIntervalSec: 10, recentFileLimit: 5, notifications: true })
+        harness.drain(harness.statusPayload({ confdir: "/c/a" }))
+      }
+
+      else if (s >= 179) {
         // The count is printed so tests/run can tell "every check passed" from
         // "no check ran": a qml that exits 0 without executing the harness, or a
         // step loop that stops early, both used to read as success.

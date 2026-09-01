@@ -550,6 +550,7 @@ Item {
     _controlError = ""
     controlProcess.command = command
     _controlRun += 1
+    controlWatchdog.restart()
     controlProcess.running = true
   }
 
@@ -566,12 +567,14 @@ Item {
     _timerError = ""
     cancelTimerProcess.command = Commands.cancelResume(resumeUnit)
     _cancelRun += 1
+    cancelWatchdog.restart()
     cancelTimerProcess.running = true
   }
 
   function settleResumeTimerCancel(run) {
     if (run !== _cancelRun || _cancelSettledRun === run) return
     _cancelSettledRun = run
+    cancelWatchdog.stop()
     afterResumeTimerCancelled()
   }
 
@@ -601,6 +604,7 @@ Item {
     _timerError = ""
     scheduleTimerProcess.command = Commands.scheduleResume(resumeUnit, service, minutes)
     _scheduleRun += 1
+    scheduleWatchdog.restart()
     scheduleTimerProcess.running = true
   }
 
@@ -674,6 +678,50 @@ Item {
   // network mount -- held the single poll slot forever, and with it every other
   // account's polling. Nothing else in the stack bounds this: the helper's own
   // 30s limit covers only its outbound CLI calls, not its local directory scan.
+  // The control processes need the same bound the poll has. `pause()` refuses
+  // while `busy`, and `busy` is true for as long as one of these runs -- so a
+  // `systemctl --user stop` that never exits (the user bus not yet back after a
+  // suspend is the realistic way) left that account's Pause and Resume dead for
+  // the rest of the session, recoverable only by restarting the bar.
+  Timer {
+    id: controlWatchdog
+    interval: root.statusTimeoutMs
+    repeat: false
+    onTriggered: {
+      if (root._controlSettledRun === root._controlRun) return
+      var run = root._controlRun
+      controlProcess.running = false
+      root.settleControl(run, 124)
+    }
+  }
+
+  Timer {
+    id: cancelWatchdog
+    interval: root.statusTimeoutMs
+    repeat: false
+    onTriggered: {
+      if (root._cancelSettledRun === root._cancelRun) return
+      var run = root._cancelRun
+      cancelTimerProcess.running = false
+      // The action the cancel precedes still goes ahead: an untimed pause is a
+      // worse outcome than a stranded timer, but silently doing nothing at all
+      // is worse than both.
+      root.settleResumeTimerCancel(run)
+    }
+  }
+
+  Timer {
+    id: scheduleWatchdog
+    interval: root.statusTimeoutMs
+    repeat: false
+    onTriggered: {
+      if (root._scheduleSettledRun === root._scheduleRun) return
+      var run = root._scheduleRun
+      scheduleTimerProcess.running = false
+      root.settleResumeSchedule(run, 124)
+    }
+  }
+
   Timer {
     id: statusWatchdog
     interval: root.statusTimeoutMs
@@ -790,6 +838,7 @@ Item {
   function settleResumeSchedule(run, exitCode) {
     if (run !== _scheduleRun || _scheduleSettledRun === run) return
     _scheduleSettledRun = run
+    scheduleWatchdog.stop()
     var stdout = String(timerStdout.text || _timerOutput || "")
     var stderr = String(timerStderr.text || _timerError || "")
     if (exitCode !== 0) {
@@ -835,6 +884,7 @@ Item {
   function settleControl(run, exitCode) {
     if (run !== _controlRun || _controlSettledRun === run) return
     _controlSettledRun = run
+    controlWatchdog.stop()
     var desired = root._controlDesired
     root._controlDesired = -1
     var stdout = String(controlStdout.text || root._controlOutput || "")

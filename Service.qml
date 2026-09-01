@@ -428,10 +428,8 @@ Item {
   // Called when the panel is opened from the bar: point it at the account the
   // badge is blaming, so the controls act on what the user just clicked about.
   function selectBadgedAccount() {
-    var worst = aggregate.worst
-    if (!worst) return
     var current = selectedAccount
-    var target = Model.openSelection(worst.service, aggregate.kind,
+    var target = Model.openSelection(aggregate,
       current ? Model.accountStateKind(current) : "")
     if (target !== "" && target !== selectedService) selectAccount(target, false)
   }

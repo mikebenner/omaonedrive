@@ -102,7 +102,13 @@ test("only a genuinely working account lights the icon", () => {
   // Discriminating: nothing here is running, so the ONLY thing that can light
   // the icon is the syncing account. Drop the syncing clause from
   // aggregateAccounts and this fails.
-  const stopped = { running: false, active: false, activeState: "inactive" }
+  //
+  // `active` is deliberately UNDEFINED here, not false: undefined means "no
+  // optimistic intent, work it out from the sample", which is the state an
+  // account is in between polls. Setting it to false would mean "the user just
+  // paused this", and the fixture would then be asserting that a pause leaves
+  // the icon lit -- see the next test.
+  const stopped = { running: false, active: undefined, activeState: "inactive" }
   const syncingOnly = [
     account(Object.assign({ instance: "a", reauthRequired: true }, stopped)),
     account(Object.assign({ instance: "b", syncing: true }, stopped))
@@ -119,6 +125,33 @@ test("only a genuinely working account lights the icon", () => {
   // the icon must dim immediately rather than waiting for the next poll.
   const justPaused = [account({ instance: "a", running: true, active: false })]
   assert.equal(Model.aggregateAccounts(justPaused).anyActive, false)
+})
+
+test("pausing during a transfer dims the icon at once", () => {
+  // The real post-click state: the last sample still says the account was
+  // uploading, and `active` says the user has just stopped it. The helper only
+  // ever sets `syncing` alongside `running`, so this leftover flag was the one
+  // thing that could still light the icon -- and it did, until a confirming
+  // poll landed a scheduler slot later. Pausing for a meeting looked like it
+  // had not taken.
+  const midTransfer = [account({
+    instance: "work", running: true, active: false, syncing: true,
+    statusText: "Uploading report.docx"
+  })]
+  const summary = Model.aggregateAccounts(midTransfer)
+  assert.equal(summary.kind, "paused")
+  assert.equal(summary.badge, "paused")
+  assert.equal(summary.anyActive, false, "the icon must dim")
+  assert.equal(Model.barState(summary).active, false)
+  assert.equal(Model.barState(summary).syncing, false)
+
+  // ...while an account transferring that nobody has touched stays lit, even
+  // between samples that report it running.
+  const stillGoing = [account({
+    instance: "work", running: false, active: undefined,
+    activeState: "inactive", syncing: true
+  })]
+  assert.equal(Model.aggregateAccounts(stillGoing).anyActive, true)
 })
 
 test("all accounts idle means the icon dims", () => {
@@ -329,27 +362,58 @@ test("the single-account badge is compared against the old ternary exhaustively"
 // required" for Work while the panel opened on a healthy Personal -- and the
 // P key, right-click Storage and the IPC controls all acted on Personal.
 
+// `summary` is the aggregate as the coordinator has it.
+function summaryOf(kind, badge, worstService, progressService) {
+  return {
+    kind: kind,
+    badge: badge === undefined ? kind : badge,
+    worst: worstService ? { service: worstService } : null,
+    progress: progressService ? { service: progressService } : null
+  }
+}
+
 test("opening the panel moves to the account the badge is blaming", () => {
-  assert.equal(Model.openSelection("onedrive@work.service", "reauth", "healthy"),
+  for (const kind of ["reauth", "resync", "failed", "missing", "login", "unavailable"]) {
+    assert.equal(
+      Model.openSelection(summaryOf(kind, kind, "onedrive@work.service"), "healthy"),
+      "onedrive@work.service", kind)
+  }
+  assert.equal(
+    Model.openSelection(summaryOf("resync", "resync", "onedrive@work.service"), "syncing"),
     "onedrive@work.service")
-  assert.equal(Model.openSelection("onedrive@work.service", "resync", "syncing"),
-    "onedrive@work.service")
-  assert.equal(Model.openSelection("onedrive@work.service", "failed", "paused"),
-    "onedrive@work.service")
-  assert.equal(Model.openSelection("onedrive@work.service", "missing", "healthy"),
+  assert.equal(
+    Model.openSelection(summaryOf("failed", "failed", "onedrive@work.service"), "paused"),
     "onedrive@work.service")
 })
 
 test("a selection the user made for a reason is not stolen", () => {
   // Having opened Work to deal with its reauth, the user must not be bounced to
   // Personal the moment Personal fails too.
-  assert.equal(Model.openSelection("onedrive@personal.service", "resync", "reauth"), "")
-  assert.equal(Model.openSelection("onedrive@personal.service", "failed", "login"), "")
+  assert.equal(
+    Model.openSelection(summaryOf("resync", "resync", "onedrive@personal.service"), "reauth"), "")
+  assert.equal(
+    Model.openSelection(summaryOf("failed", "failed", "onedrive@personal.service"), "login"), "")
+})
+
+test("clicking a spinning bar reaches the account that is actually transferring", () => {
+  // The pause-vs-progress rule means the badge can be about a DIFFERENT account
+  // from the worst one. Clicking then landed on whatever was last selected --
+  // often the paused account, or the cold-boot default -- and the panel showed
+  // no sign of the transfer the bar was advertising.
+  const spinning = summaryOf("paused", "syncing", "onedrive@work.service",
+    "onedrive@personal.service")
+  assert.equal(Model.openSelection(spinning, "paused"), "onedrive@personal.service")
+  assert.equal(Model.openSelection(spinning, "healthy"), "onedrive@personal.service")
+  // ...but not away from an account that needs attention, nor from one the user
+  // is already watching sync.
+  assert.equal(Model.openSelection(spinning, "reauth"), "")
+  assert.equal(Model.openSelection(spinning, "syncing"), "")
+  assert.equal(Model.openSelection(spinning, "starting"), "")
 })
 
 test("a healthy fleet never moves the selection", () => {
-  for (const kind of ["healthy", "syncing", "starting", "paused", "checking", ""]) {
-    assert.equal(Model.openSelection("onedrive@a.service", kind, "healthy"), "",
+  for (const kind of ["healthy", "paused", "checking", ""]) {
+    assert.equal(Model.openSelection(summaryOf(kind, kind, "onedrive@a.service"), "healthy"), "",
       kind + " must not steal the selection")
   }
   // A deliberate pause is not a problem to be shown; nor is progress.
@@ -357,15 +421,17 @@ test("a healthy fleet never moves the selection", () => {
   assert.equal(Model.needsAttention("syncing"), false)
   assert.equal(Model.needsAttention("healthy"), false)
   assert.equal(Model.needsAttention("checking"), false)
-  // ...and every kind that puts an actionable badge on the bar does.
   for (const kind of ["resync", "reauth", "failed", "missing", "login", "unavailable"]) {
     assert.equal(Model.needsAttention(kind), true, kind + " must be actionable")
   }
 })
 
 test("nothing to blame means nothing to select", () => {
-  assert.equal(Model.openSelection("", "reauth", "healthy"), "")
-  assert.equal(Model.openSelection(null, "reauth", "healthy"), "")
+  assert.equal(Model.openSelection(summaryOf("reauth", "reauth", ""), "healthy"), "")
+  assert.equal(Model.openSelection(summaryOf("reauth", "reauth", null), "healthy"), "")
+  assert.equal(Model.openSelection(summaryOf("paused", "syncing", "a", null), "healthy"), "")
+  assert.equal(Model.openSelection(null, "healthy"), "")
+  assert.equal(Model.openSelection(undefined, "healthy"), "")
 })
 
 // --- what the bar icon does with an aggregate --------------------------------

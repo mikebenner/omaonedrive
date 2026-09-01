@@ -314,7 +314,10 @@ function accountState(account) {
 function aggregateAccounts(accounts) {
   var list = Array.isArray(accounts) ? accounts : []
   if (list.length === 0) {
-    return { kind: "checking", rank: 0, count: 0, worst: null, anyActive: false, initialized: false }
+    return {
+      kind: "checking", badge: "checking", rank: 0, count: 0,
+      worst: null, progress: null, anyActive: false, initialized: false
+    }
   }
   // Accounts that have not reported yet are EXCLUDED rather than gating the
   // whole aggregate. Excluding them already prevents default property values
@@ -327,6 +330,7 @@ function aggregateAccounts(accounts) {
   var worstRank = Number.MAX_VALUE
   var anyActive = false
   var anyProgress = false
+  var progress = null
   for (var index = 0; index < list.length; index++) {
     var account = list[index]
     if (!account || account.initialized !== true) continue
@@ -340,18 +344,28 @@ function aggregateAccounts(accounts) {
     // account.active already folds in the optimistic _desired state, so a just-
     // pressed Pause dims the icon immediately instead of waiting for a poll.
     // Fall back to the raw fields for plain objects that have no `active`.
-    var isActive = account.active !== undefined
-      ? account.active === true
+    var stated = account.active
+    var isActive = stated !== undefined
+      ? stated === true
       : (account.running === true || String(account.activeState || "") === "activating")
-    if (isActive || account.syncing === true) anyActive = true
+    // A transfer keeps the icon lit even between "running" samples -- but NOT
+    // for an account the user has just paused. The helper only ever sets
+    // `syncing` alongside `running`, so the leftover flag from the sample before
+    // the pause was the one thing this clause could still light, and the icon
+    // stayed bright until a confirming poll landed. Pausing during an upload
+    // looked like it had not taken.
+    if (isActive || (account.syncing === true && stated !== false)) anyActive = true
     // Tracked separately from the worst rank: the badge and the tooltip want
     // different answers in the band below "needs attention".
-    if (state.kind === "syncing" || state.kind === "starting") anyProgress = true
+    if (state.kind === "syncing" || state.kind === "starting") {
+      anyProgress = true
+      if (progress === null) progress = account
+    }
   }
   if (!anyInitialized || worst === null) {
     return {
       kind: "checking", badge: "checking", rank: 0, count: list.length,
-      worst: null, anyActive: anyActive, initialized: false
+      worst: null, progress: null, anyActive: anyActive, initialized: false
     }
   }
   var kind = accountStateKind(worst)
@@ -368,6 +382,10 @@ function aggregateAccounts(accounts) {
     // bar. So in the band below attention, progress wins; the tooltip still
     // lists the paused account first, so the reminder is not lost.
     badge: !needsAttention(kind) && anyProgress ? "syncing" : kind,
+    // The first account actually transferring, when there is one. The bar can
+    // show a syncing badge while the WORST account is paused, and clicking it
+    // has to reach the thing the badge is about.
+    progress: progress,
     rank: worstRank,
     count: list.length,
     worst: worst,
@@ -513,11 +531,25 @@ function badgeKind(kind) {
 // own choice is only overridden when it is not itself asking for attention:
 // having deliberately opened Work to deal with it, they must not be bounced to
 // Personal the moment Personal goes wrong too.
-function openSelection(worstService, worstKind, selectedKind) {
-  if (!worstService) return ""
-  if (!needsAttention(worstKind)) return ""
-  if (needsAttention(selectedKind)) return ""
-  return worstService
+function openSelection(summary, selectedKind) {
+  var aggregate = summary && typeof summary === "object" ? summary : {}
+  var kind = String(aggregate.kind || "")
+  if (needsAttention(kind)) {
+    // A selection the user made for a reason is not stolen: having opened Work
+    // to deal with its reauth, they must not be bounced to Personal the moment
+    // Personal fails too.
+    if (needsAttention(selectedKind)) return ""
+    return aggregate.worst ? String(aggregate.worst.service || "") : ""
+  }
+  // The badge can be about progress while the WORST account is paused -- that is
+  // the pause-vs-progress rule. Clicking a spinning bar then landed on whatever
+  // was last selected, often the paused account or the cold-boot default, and
+  // the panel showed no sign of the transfer the bar was advertising.
+  if (String(aggregate.badge || "") === "syncing" && selectedKind !== "syncing"
+      && selectedKind !== "starting" && !needsAttention(selectedKind)) {
+    return aggregate.progress ? String(aggregate.progress.service || "") : ""
+  }
+  return ""
 }
 
 // The states that put a badge on the bar and have something for the user to do.

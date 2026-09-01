@@ -128,7 +128,11 @@ def load_cache(path):
       continue
     try:
       value[key] = int(value[key] or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+      # OverflowError is the one that is easy to miss: JSON's 1e999 parses to
+      # float infinity, which int() refuses. Like the others, it killed the
+      # helper for that account on every poll, for ever, before anything could
+      # repair the file.
       value.pop(key, None)
   return value
 
