@@ -6,8 +6,20 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 qml_runner=$(command -v qml6 || echo /usr/lib/qt6/bin/qml)
 [ -x "$qml_runner" ] || { echo "Contract check SKIPPED (no qml6)"; exit 0; }
 
-accounts=$(python3 "$root/onedrive-status.py" --list-accounts 2>/dev/null) || accounts=""
-case "$accounts" in ''|'[]') echo "Contract check SKIPPED (no accounts discovered)"; exit 0 ;; esac
+# A helper that CRASHED and a machine with no accounts are not the same thing.
+# Swallowing the exit status turned "--list-accounts raises" into a clean skip,
+# so breaking discovery outright passed the suite.
+if ! accounts=$(python3 "$root/onedrive-status.py" --list-accounts 2>&1); then
+  echo "Contract check FAILED: --list-accounts exited non-zero" >&2
+  printf '  %s\n' "$accounts" >&2
+  exit 1
+fi
+if ! printf '%s' "$accounts" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+  echo "Contract check FAILED: --list-accounts did not produce JSON" >&2
+  printf '  %s\n' "$accounts" >&2
+  exit 1
+fi
+case "$accounts" in '[]') echo "Contract check SKIPPED (no accounts on this machine)"; exit 0 ;; esac
 
 # Generated beside Contract.qml so its relative import of the widget resolves.
 harness="$root/tests/qml/.Contract.generated.qml"
@@ -30,18 +42,24 @@ rm -f -- "$qml_out"
 # and then exited 1 passed the check.
 [ "$qml_status" -eq 0 ] || { echo "Contract check FAILED: the QML harness exited $qml_status" >&2; exit 1; }
 [ -n "$commands" ] || { echo "Contract check FAILED: the QML produced no commands" >&2; exit 1; }
-# All three modes must be represented, or a harness that stopped early would
-# silently narrow what is checked.
-for expected in "--quota" "--sync-status"; do
-  case "$commands" in *"$expected"*) ;; *)
-    echo "Contract check FAILED: no $expected command was produced" >&2; exit 1 ;;
-  esac
-done
-
 count=0
+routine=0
+quota=0
+syncstatus=0
 while IFS= read -r line; do
   [ -n "$line" ] || continue
-  mapfile -t argv < <(python3 -c 'import json,sys; [print(a) for a in json.loads(sys.argv[1])]' "$line")
+  # In a process substitution this python3 could fail and the check would sail
+  # on: feeding it a line that is not JSON printed a traceback and still ended
+  # with "Contract check passed (0 commands)".
+  if ! argv_lines=$(python3 -c 'import json,sys
+argv = json.loads(sys.argv[1])
+assert isinstance(argv, list) and argv, "not a non-empty argv array"
+for a in argv: print(a)' "$line" 2>&1); then
+    echo "Contract check FAILED: the QML emitted a line that is not an argv array" >&2
+    printf '  line:  %s\n  error: %s\n' "$line" "$argv_lines" >&2
+    exit 1
+  fi
+  mapfile -t argv <<<"$argv_lines"
   [ "${#argv[@]}" -gt 0 ] || continue
   case "${argv[*]}" in *--list-accounts*) continue ;; esac
   if ! out=$("${argv[@]}" 2>&1); then
@@ -55,6 +73,25 @@ while IFS= read -r line; do
     exit 1
   fi
   count=$((count + 1))
+  case "${argv[*]}" in
+    *--quota*)       quota=$((quota + 1)) ;;
+    *--sync-status*) syncstatus=$((syncstatus + 1)) ;;
+    *)               routine=$((routine + 1)) ;;
+  esac
 done <<<"$commands"
 
-echo "Contract check passed ($count widget-built command(s) accepted by the real helper)"
+# Counted from what was actually EXECUTED, not grepped out of the QML's output.
+# The old gate looked only for --quota and --sync-status, so making every
+# routine status vector return [] -- the poll the widget runs every few seconds,
+# and the only one that reports sync state -- still passed. And nothing required
+# the count to be positive at all.
+[ "$count" -gt 0 ] || { echo "Contract check FAILED: no command was executed" >&2; exit 1; }
+for mode in "routine:$routine" "quota:$quota" "sync-status:$syncstatus"; do
+  case "$mode" in *:0)
+    echo "Contract check FAILED: no ${mode%%:*} status command was produced" >&2
+    exit 1 ;;
+  esac
+done
+
+echo "Contract check passed ($count widget-built command(s) accepted by the real helper:" \
+     "$routine routine, $quota quota, $syncstatus sync-status)"

@@ -281,6 +281,12 @@ Item {
           { service: "onedrive@b.service", instance: "b", confdir: "/c/b", description: "B" },
           { service: "onedrive@c.service", instance: "c", confdir: "/c/c", description: "C" }
         ])
+        // `attempted` is inherited from the polling above, so asserting it here
+        // passed whether or not the empty-command branch set it. Clear it first
+        // and the assertion is about this branch again.
+        svc.accounts[0].forgetSample()
+        harness.check(svc.accounts[0].attempted === false,
+          "the account starts this check having never been attempted")
         svc.accounts[0].refresh(false)
         harness.check(Quickshell.spawnCount === spawnsBefore,
           "an account with no confdir spawns no process")
@@ -289,12 +295,17 @@ Item {
         harness.check(svc.accounts[0].attempted === true,
           "...and counts as attempted, so the startup hold and ramp can end")
         // Poll every remaining account by name, so this cannot pass because the
-        // round-robin happened to pick someone else.
+        // round-robin happened to pick someone else. Count SPAWNS, not the
+        // `refreshing` flag: a cloud check released by the drain above already
+        // sets that, so the flag was true whether or not the refresh did
+        // anything.
         var reached = 0
         for (var t2 = 0; t2 < svc.accounts.length; t2++) {
           if (svc.accounts[t2] === svc.accounts[0]) continue
+          harness.drain(harness.statusPayload({}))
+          var before2 = Quickshell.spawnCount
           svc.accounts[t2].refresh(false)
-          if (svc.accounts[t2].refreshing) reached += 1
+          if (Quickshell.spawnCount === before2 + 1) reached += 1
           harness.finishStatus(svc.accounts[t2].service, harness.statusPayload({}))
         }
         harness.check(reached === svc.accounts.length - 1,
@@ -1141,7 +1152,117 @@ Item {
         harness.drain(harness.statusPayload({}))
       }
 
-      else if (s >= 102) {
+
+      // ---------------------------------------------------------------------
+      // Three fixes from an earlier round that could each be reverted wholesale
+      // with the entire suite green. A reviewer applied all three and reported
+      // "suite passed" for every one.
+      else if (s === 102) {
+        console.log("a stale cloud reply must release the shared slot")
+        svc.applyDiscovery([
+          { service: "onedrive@a.service", instance: "a", confdir: "/c/a", description: "A" },
+          { service: "onedrive@b.service", instance: "b", confdir: "/c/b", description: "B" }
+        ])
+        harness.drain(harness.statusPayload({}))
+      }
+
+      else if (s === 103) {
+        harness.drain(harness.statusPayload({}))
+        svc.accounts[0].checkQuota()
+        svc.accounts[1].checkQuota()
+        harness.check(harness.liveWith("--quota").length === 1,
+          "A's cloud check is in flight and B's is queued behind it")
+        // A is repointed at a different config directory while its check runs.
+        // The reply that comes back describes the OLD directory and is discarded
+        // -- but everything the normal path releases has to be released anyway,
+        // or the coordinator goes on believing a cloud check is running and B's
+        // never starts.
+        svc.applyDiscovery([
+          { service: "onedrive@a.service", instance: "a", confdir: "/c/a2", description: "A" },
+          { service: "onedrive@b.service", instance: "b", confdir: "/c/b", description: "B" }
+        ])
+        harness.check(svc.accounts[0].confdir === "/c/a2", "A is repointed mid-check")
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({ usedBytes: 1 }))
+      }
+
+      else if (s === 104) {
+        var released = harness.liveWith("--quota")
+        harness.check(released.length === 1,
+          "the discarded reply still frees the slot, so the queued check runs")
+        harness.check(released.length === 1 && released[0].indexOf("/c/b") !== -1,
+          "...and it is B's, with B's own config directory")
+        harness.drain(harness.statusPayload({}))
+      }
+
+      // A repeat click while the same check is already running used to queue a
+      // duplicate, which then ran the same 30-second query again the moment the
+      // first finished.
+      else if (s === 105) {
+        console.log("a click repeated during the check it started is dropped")
+        harness.drain(harness.statusPayload({}))
+        svc.accounts[0].checkQuota()
+        harness.check(harness.liveWith("--quota").length === 1, "one quota check is running")
+        svc.accounts[0].checkQuota()
+        svc.accounts[0].checkQuota()
+        harness.check(harness.liveWith("--quota").length === 1,
+          "...and the repeats start nothing more")
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({ usedBytes: 1 }))
+      }
+
+      else if (s === 106) {
+        harness.check(harness.liveWith("--quota").length === 0,
+          "...nor queue a duplicate that runs the moment the first one finishes")
+        // A different mode for the same account is a real request, so the
+        // de-duplication cannot simply be "ignore everything while busy".
+        harness.drain(harness.statusPayload({}))
+        svc.accounts[0].checkQuota()
+        svc.accounts[0].checkFullStatus()
+        harness.check(harness.liveWith("--quota").length === 1,
+          "the quota check is running")
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({}))
+      }
+
+      else if (s === 107) {
+        harness.check(harness.liveWith("--sync-status").length === 1,
+          "...and the sync-status check queued behind it still runs")
+        harness.drain(harness.statusPayload({}))
+      }
+
+      // Selecting an account from IPC must not inherit the panel's behaviour of
+      // retrying a stale failed storage check: automation targeting an account
+      // in order to pause it would silently contact Microsoft.
+      else if (s === 108) {
+        console.log("selecting an account from automation does not contact the cloud")
+        harness.drain(harness.statusPayload({}))
+        harness.stale = harness.statusPayload({
+          syncDir: "/d/b", quotaError: "temporary failure", quotaCheckedTs: 1 })
+        svc.selectAccount("onedrive@b.service", false)
+        harness.drain(harness.stale)
+      }
+
+      else if (s === 109) {
+        harness.check(svc.accounts[1].quotaError !== "",
+          "B has a failed storage check old enough to be retried")
+        harness.check(harness.liveWith("--quota").length === 0,
+          "an automation selection starts no cloud check")
+        // The discriminating half: the PANEL's selection does retry it, so this
+        // cannot pass by the retry being broken outright.
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@a.service", false)
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@b.service", true)
+        harness.drain(harness.stale)
+      }
+
+      else if (s === 110) {
+        harness.check(harness.liveWith("--quota").length === 1,
+          "...while opening the panel on it does retry the stale check")
+        harness.check(harness.liveWith("/c/b").length === 1,
+          "...for B, the account that was selected")
+        harness.drain(harness.statusPayload({}))
+      }
+
+      else if (s >= 111) {
         // The count is printed so tests/run can tell "every check passed" from
         // "no check ran": a qml that exits 0 without executing the harness, or a
         // step loop that stops early, both used to read as success.
@@ -1161,4 +1282,5 @@ Item {
   property double burstStart: 0
   property int streamTicks: 0
   property string stuck: ""
+  property string stale: ""
 }

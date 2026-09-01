@@ -7,8 +7,14 @@ const Model = require("../Model.js")
 // the cloud semaphore passed the entire suite: the logic lived in QML, which has
 // no harness here. Pulling the DECISIONS out makes them assertable.
 
+// A healthy account that has already reported. `initialized` has to DEFAULT to
+// true: without it every fixture looked equally unreported, so reverting the
+// product's priority from `attempted` back to `initialized` -- the monopoly bug
+// -- left the test named after it green.
 function acct(overrides) {
-  return Object.assign({ routinePolling: false, busy: false, attempted: true }, overrides || {})
+  return Object.assign(
+    { routinePolling: false, busy: false, attempted: true, initialized: true },
+    overrides || {})
 }
 
 test("an account already polling is never handed another slot", () => {
