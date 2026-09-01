@@ -167,6 +167,34 @@ case " $* " in
         description='onedrive@ghost.service'
         args=''
         ;;
+      onedrive@broken.service)
+        # A unit systemd could not parse. Like masked and not-found, it has no
+        # ExecStart -- and an empty ExecStart used to read as "passes no
+        # --confdir", which aliased this instance onto the DEFAULT account.
+        load=error
+        description='onedrive@broken.service'
+        args=''
+        ;;
+      onedrive@stub.service)
+        load=stub
+        description='onedrive@stub.service'
+        args=''
+        ;;
+      onedrive@unloadable.service)
+        # LoadState=error WITH a perfectly good ExecStart. systemd could not load
+        # this unit, so it will never run: offering it as an account gives the
+        # user a tab whose pause and resume buttons do nothing. The empty-
+        # ExecStart rule does not catch this one -- only the allowlist does.
+        load=error
+        description='OneDrive sync (unloadable account)'
+        args='--monitor --confdir=/srv/onedrive/mailboxes/unloadable'
+        ;;
+      onedrive@hollow.service)
+        # Loaded, but `systemctl show` tells us nothing about what it runs.
+        load=loaded
+        description='OneDrive sync (hollow account)'
+        args=''
+        ;;
       *) exit 1 ;;
     esac
     echo "LoadState=$load"
@@ -460,10 +488,21 @@ fi
 # ExecStart must not read as "uses the default confdir"; and a unit whose
 # ExecStart carries a present-but-unusable confdir must be dropped rather than
 # silently aliased onto the default account.
+#
+# error, stub and a LOADED unit whose `systemctl show` reports no ExecStart at
+# all reach the same place by a different road: an empty ExecStart read as "this
+# unit passes no --confdir, so the client default applies", which pointed a
+# template instance at the DEFAULT account's token, cache and sync directory.
+# The rule is an allowlist -- loaded, with something to run -- not a list of the
+# bad states we happened to think of.
 units=$'onedrive.service loaded active running OneDrive Client for Linux
 onedrive@.service loaded active running OneDrive sync template
 onedrive@ghost.service not-found inactive dead onedrive@ghost.service
 onedrive@masked.service masked inactive dead onedrive@masked.service
+onedrive@broken.service error inactive dead onedrive@broken.service
+onedrive@stub.service stub inactive dead onedrive@stub.service
+onedrive@unloadable.service error inactive dead OneDrive sync (unloadable account)
+onedrive@hollow.service loaded inactive dead OneDrive sync (hollow account)
 onedrive@bogus.service loaded inactive dead OneDrive sync (bogus account)
 onedrive@work.service loaded inactive dead OneDrive sync (work account)
 onedrive@personal.service loaded active running OneDrive sync (personal account)'
@@ -472,6 +511,11 @@ log_lines_before=$(wc -l <"$FAKE_ONEDRIVE_LOG")
 FAKE_UNITS="$units" python3 "$root/onedrive-status.py" --list-accounts >"$test_root/accounts.json"
 jq -e --arg default_confdir "$test_home/.config/onedrive" '
   length == 3
+  and ([.[].service] | index("onedrive@broken.service")) == null
+  and ([.[].service] | index("onedrive@stub.service")) == null
+  and ([.[].service] | index("onedrive@hollow.service")) == null
+  and ([.[].service] | index("onedrive@unloadable.service")) == null
+  and ([.[] | select(.confdir == $default_confdir)] | length) == 1
   and .[0].service == "onedrive.service"
   and .[0].instance == ""
   and .[0].confdir == $default_confdir
@@ -701,6 +745,34 @@ jq -e --arg confdir "$test_home/.config/onedrive" '.confdir == $confdir' \
   exit 1
 }
 python3 "$root/onedrive-status.py" --limit 5 >"$test_root/stamp.json"
+
+# A cache file that is valid JSON but has a string where a number belongs used to
+# raise ValueError before the code that would have repaired or replaced it. One
+# bad byte -- an editor, a truncated write, a botched migration -- and that
+# account's helper failed on EVERY poll from then on, for ever, with no way out
+# but finding and deleting the file. The reply below must still be produced.
+default_cache="$XDG_STATE_HOME/omarchy/io.github.salemsayed.omaonedrive/status-cache.json"
+cat >"$default_cache" <<'JSON'
+{"scanLimit":"not-a-number","scanAt":"also-bad","usedBytes":null,"quotaBytes":[],
+ "quotaCheckedTs":"x","remoteStatus":"Not checked","files":[]}
+JSON
+python3 "$root/onedrive-status.py" --limit 5 >"$test_root/badcache.json" || {
+  echo "a malformed cache value killed the helper" >&2
+  exit 1
+}
+jq -e '.ok == true and .usedBytes == 0 and .quotaBytes == 0 and .quotaCheckedTs == 0' \
+  "$test_root/badcache.json" >/dev/null || {
+  echo "a malformed cache was not treated as absent" >&2
+  exit 1
+}
+# ...and the next write repairs it, rather than leaving the bad value to be
+# re-read for ever.
+jq -e '(.scanLimit | type) == "number" and (.scanAt | type) == "number"' \
+  "$default_cache" >/dev/null || {
+  echo "the cache was not repaired on save" >&2
+  cat "$default_cache" >&2
+  exit 1
+}
 jq -e --arg confdir "$test_home/.config/onedrive" '.confdir == $confdir' \
   "$test_root/stamp.json" >/dev/null || {
   echo "a default-confdir reply did not report which directory it read" >&2

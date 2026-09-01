@@ -433,3 +433,103 @@ test("a helper that failed is not reported as a missing client", () => {
     [{ initialized: true, attempted: true, installed: false }], Date.now())
   assert.ok(reallyMissing.includes("not installed"), reallyMissing)
 })
+
+test("an account whose helper keeps failing says so, however many accounts there are", () => {
+  // The one-account path already said this. With two or three accounts a
+  // permanently broken one was folded into "Checking N more…" -- a count that
+  // never goes down and never explains itself. And when python3 or the helper is
+  // missing outright, EVERY account is in that state at once, so the bar sat on
+  // "checking 3 accounts" for ever with no badge and no reason.
+  const dead = {
+    initialized: false, attempted: true, instance: "work",
+    description: "OneDrive sync (work account)",
+    lastError: "Could not run the OneDrive status helper"
+  }
+  const whole = Model.aggregateTooltip([dead, Object.assign({}, dead, { instance: "home" })],
+    Date.now())
+  assert.ok(whole.includes("Could not run the OneDrive status helper"), whole)
+  // Named by their display names, so the user can tell which one is broken.
+  assert.ok(whole.includes("Work:"), whole)
+  assert.ok(whole.includes("Home:"), whole)
+  assert.ok(!whole.includes("Checking 2"), whole)
+
+  // Mixed with a healthy account, it is listed rather than counted.
+  const mixed = Model.aggregateTooltip([account({ instance: "personal" }), dead], Date.now())
+  assert.ok(mixed.includes("Could not run the OneDrive status helper"), mixed)
+  assert.ok(mixed.includes("Work:"), mixed)
+  assert.ok(!mixed.includes("Checking 1 more"), mixed)
+
+  // An account that simply has not been polled YET is still just checking.
+  const early = Model.aggregateTooltip(
+    [account({ instance: "personal" }), { initialized: false, attempted: false }], Date.now())
+  assert.ok(early.includes("Checking 1 more…"), early)
+  assert.ok(!early.includes("unavailable"), early)
+})
+
+// --- what the bar shows when one account is paused ----------------------------
+//
+// Worst-first is right for problems. A pause is a choice, not a problem, and
+// "paused" outranking "syncing" put a pause glyph on a bar whose other accounts
+// were transferring -- the same class of lie as the dim that one missing account
+// used to put on a healthy bar.
+
+test("one paused account does not stop a transferring bar from spinning", () => {
+  const fleet = [
+    account({ instance: "work", running: false, active: false, activeState: "inactive" }),
+    account({ instance: "personal", syncing: true }),
+    account({ instance: "archive" })
+  ]
+  const summary = Model.aggregateAccounts(fleet)
+  // The worst account is still the paused one -- the tooltip leads with it.
+  assert.equal(summary.kind, "paused")
+  assert.equal(summary.worst.instance, "work")
+  // ...but the badge follows the work actually happening.
+  assert.equal(summary.badge, "syncing")
+  assert.equal(Model.badgeKind(summary.badge), "syncing")
+  assert.equal(Model.barState(summary).syncing, true)
+  assert.equal(Model.barState(summary).active, true)
+})
+
+test("a problem still beats progress, whoever is syncing", () => {
+  // The rule is confined to the band BELOW attention. An account needing a
+  // resync must not be hidden because another one happens to be transferring.
+  for (const kind of ["resync", "reauth", "failed", "missing", "login", "unavailable"]) {
+    const overrides = {
+      resync: { resyncRequired: true }, reauth: { reauthRequired: true },
+      failed: { serviceFailed: true }, missing: { installed: false },
+      login: { authenticated: false }, unavailable: { serviceAvailable: false }
+    }[kind]
+    const summary = Model.aggregateAccounts([
+      account(Object.assign({ instance: "bad" }, overrides)),
+      account({ instance: "busy", syncing: true })
+    ])
+    assert.equal(summary.kind, kind, kind)
+    assert.equal(summary.badge, kind, kind + " must still reach the badge")
+  }
+})
+
+test("with nothing transferring, the paused account keeps the badge", () => {
+  const idle = Model.aggregateAccounts([
+    account({ instance: "work", running: false, active: false, activeState: "inactive" }),
+    account({ instance: "personal" })
+  ])
+  assert.equal(idle.badge, "paused")
+  // An account merely STARTING counts as progress, like the badge already says.
+  const starting = Model.aggregateAccounts([
+    account({ instance: "work", running: false, active: false, activeState: "inactive" }),
+    account({ instance: "personal", activeState: "activating", running: false })
+  ])
+  assert.equal(starting.badge, "syncing")
+})
+
+test("the tooltip still leads with the paused account", () => {
+  // The reminder must not be lost: the badge stops shouting about it, the
+  // tooltip still lists it first.
+  const text = Model.aggregateTooltip([
+    account({ instance: "personal", syncing: true, statusText: "Syncing" }),
+    account({ instance: "work", running: false, active: false,
+              activeState: "inactive", statusText: "Sync paused" })
+  ], Date.now())
+  const lines = text.split("\n")
+  assert.ok(lines[1].startsWith("Work:"), text)
+})

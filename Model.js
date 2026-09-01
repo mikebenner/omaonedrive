@@ -326,6 +326,7 @@ function aggregateAccounts(accounts) {
   var worst = null
   var worstRank = Number.MAX_VALUE
   var anyActive = false
+  var anyProgress = false
   for (var index = 0; index < list.length; index++) {
     var account = list[index]
     if (!account || account.initialized !== true) continue
@@ -343,12 +344,30 @@ function aggregateAccounts(accounts) {
       ? account.active === true
       : (account.running === true || String(account.activeState || "") === "activating")
     if (isActive || account.syncing === true) anyActive = true
+    // Tracked separately from the worst rank: the badge and the tooltip want
+    // different answers in the band below "needs attention".
+    if (state.kind === "syncing" || state.kind === "starting") anyProgress = true
   }
   if (!anyInitialized || worst === null) {
-    return { kind: "checking", rank: 0, count: list.length, worst: null, anyActive: anyActive, initialized: false }
+    return {
+      kind: "checking", badge: "checking", rank: 0, count: list.length,
+      worst: null, anyActive: anyActive, initialized: false
+    }
   }
+  var kind = accountStateKind(worst)
   return {
-    kind: accountStateKind(worst),
+    kind: kind,
+    // What the BAR shows, which is not always the worst account's state.
+    //
+    // Worst-first is the right rule for problems. A pause is not a problem, it
+    // is a choice -- `needsAttention("paused")` is already false and opening the
+    // panel will not steal the selection for one. But because "paused" outranks
+    // "syncing", pausing one account of three put a pause glyph on a bar whose
+    // other two were transferring, and stopped it spinning. That is the same
+    // class of lie as the dim that one missing account used to put on a healthy
+    // bar. So in the band below attention, progress wins; the tooltip still
+    // lists the paused account first, so the reminder is not lost.
+    badge: !needsAttention(kind) && anyProgress ? "syncing" : kind,
     rank: worstRank,
     count: list.length,
     worst: worst,
@@ -376,8 +395,28 @@ function aggregateTooltip(accounts, nowMs, maxLines) {
     }
     return tooltip(only, nowMs)
   }
+  // An account that has been polled and still cannot report is not "checking":
+  // its helper failed, or timed out, and it will keep failing. Saying so is the
+  // only way the user learns which account is broken and why -- and when the
+  // helper is missing outright, EVERY account is in this state at once, so this
+  // is the whole tooltip, not a footnote.
+  var broken = list.filter(function (account) {
+    return account && account.initialized !== true && account.attempted === true
+      && String(account.lastError || "") !== ""
+  })
   var summary = aggregateAccounts(list)
-  if (!summary.initialized) return "Checking " + list.length + " OneDrive accounts…"
+  if (!summary.initialized) {
+    if (broken.length === 0) return "Checking " + list.length + " OneDrive accounts…"
+    var stalled = ["OneDrive status unavailable"]
+    for (var b = 0; b < broken.length; b++) {
+      stalled.push(accountName(broken[b].instance, broken[b].description)
+        + ": " + String(broken[b].lastError))
+    }
+    if (broken.length < list.length) {
+      stalled.push("Checking " + (list.length - broken.length) + " more…")
+    }
+    return stalled.join("\n")
+  }
 
   // Only accounts that have reported. An un-polled account still carries default
   // values, which classify as "missing" and would sort to the TOP of a
@@ -395,9 +434,15 @@ function aggregateTooltip(accounts, nowMs, maxLines) {
 
   var cap = maxLines === undefined ? 5 : maxLines
   var lines = ["OneDrive · " + list.length + " accounts"]
-  if (reported.length < list.length) {
-    lines.push("Checking " + (list.length - reported.length) + " more…")
+  // A broken account listed among the healthy ones, so a permanently failing
+  // helper is visible next to the accounts that ARE working rather than being
+  // folded into a "checking" count that never goes down.
+  for (var f = 0; f < broken.length; f++) {
+    lines.push(accountName(broken[f].instance, broken[f].description)
+      + ": " + String(broken[f].lastError))
   }
+  var stillChecking = list.length - reported.length - broken.length
+  if (stillChecking > 0) lines.push("Checking " + stillChecking + " more…")
   for (var index = 0; index < ordered.length && index < cap; index++) {
     var account = ordered[index].account
     lines.push(accountName(account.instance, account.description) + ": " + tooltip(account, nowMs))
@@ -419,7 +464,8 @@ function aggregateTooltip(accounts, nowMs, maxLines) {
 // missing -- could be restored there with the entire suite still green.
 function barState(aggregate) {
   var summary = aggregate && typeof aggregate === "object" ? aggregate : {}
-  var kind = String(summary.kind || "")
+  // The badge kind, not the worst kind: see the note in aggregateAccounts.
+  var kind = String(summary.badge || summary.kind || "")
   // Lit while ANY account is working, so one paused account does not dim a bar
   // that is still syncing two others.
   var anyActive = summary.anyActive === true
