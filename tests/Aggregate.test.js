@@ -533,3 +533,50 @@ test("the tooltip still leads with the paused account", () => {
   const lines = text.split("\n")
   assert.ok(lines[1].startsWith("Work:"), text)
 })
+
+test("every badge kind has its own glyph, and they are all distinct", () => {
+  // Inverting any one of these mappings left the whole suite green: the bar
+  // would have shown the pause glyph for a reauth, and nothing would have said
+  // so. The glyphs are the only thing the user sees at eight pixels.
+  const glyphs = {
+    missing: "\u{f0156}",
+    login: "\u{f030b}",
+    paused: "\u{f03e4}",
+    syncing: "\u{f0453}",
+    attention: "\u{f002a}"
+  }
+  for (const kind of Object.keys(glyphs)) {
+    assert.equal(Model.badgeGlyph(kind), glyphs[kind], kind)
+  }
+  const drawn = Object.keys(glyphs).map(kind => Model.badgeGlyph(kind))
+  assert.equal(new Set(drawn).size, drawn.length, "two badge kinds share a glyph")
+  // A healthy fleet, and anything unrecognised, draws no badge at all.
+  assert.equal(Model.badgeGlyph(""), "")
+  assert.equal(Model.badgeGlyph("healthy"), "")
+  assert.equal(Model.badgeGlyph("checking"), "")
+  assert.equal(Model.badgeGlyph(undefined), "")
+  // ...and every kind the aggregate can produce maps to a badge that has a
+  // glyph, or to none. Nothing may fall through to a blank badge by accident.
+  for (const kind of ["resync", "reauth", "failed", "missing", "login",
+                      "unavailable", "paused", "starting", "syncing"]) {
+    const badge = Model.badgeKind(kind)
+    assert.notEqual(badge, "", kind + " must reach a badge")
+    assert.notEqual(Model.badgeGlyph(badge), "", kind + " -> " + badge + " must have a glyph")
+  }
+})
+
+test("the tooltip counts only the accounts it has not otherwise explained", () => {
+  const dead = {
+    initialized: false, attempted: true, instance: "work",
+    description: "OneDrive sync (work account)", lastError: "helper failed"
+  }
+  // Every account is broken: there is no one left to be "checking", and saying
+  // "Checking 0 more…" would be nonsense.
+  const all = Model.aggregateTooltip([dead, Object.assign({}, dead, { instance: "home" })],
+    Date.now())
+  assert.ok(!all.includes("more…"), all)
+  // One broken, one not yet polled: exactly one is still checking.
+  const some = Model.aggregateTooltip(
+    [dead, { initialized: false, attempted: false }], Date.now())
+  assert.ok(some.includes("Checking 1 more…"), some)
+})

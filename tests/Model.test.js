@@ -141,3 +141,50 @@ test("an error line is squashed to one line and capped", () => {
   // Whitespace alone is nothing to report.
   assert.equal(Model.elideStatus("   \n\t  "), "")
 })
+
+test("relative times step through every unit, including the ones nobody reaches", () => {
+  // Inverting the month/year boundary left the suite green. A stale account is
+  // exactly where these matter: "13mo ago" and "1y ago" are the difference
+  // between a sync that is old and one that never happened.
+  const now = Date.UTC(2026, 0, 1)
+  const ago = seconds => Model.relativeTime(now / 1000 - seconds, now)
+  assert.equal(ago(30), "Just now")
+  assert.equal(Model.relativeTime(0, now), "Never")
+  assert.equal(ago(60 * 5), "5m ago")
+  assert.equal(ago(60 * 60 * 3), "3h ago")
+  assert.equal(ago(60 * 60 * 24 * 5), "5d ago")
+  assert.equal(ago(60 * 60 * 24 * 60), "2mo ago")
+  // The boundary the inversion crossed: 11 months is months, 12 is years.
+  assert.equal(ago(60 * 60 * 24 * 30 * 11), "11mo ago")
+  assert.equal(ago(60 * 60 * 24 * 400), "1y ago")
+  assert.equal(ago(60 * 60 * 24 * 800), "2y ago")
+})
+
+test("a file's glyph follows its kind, and each kind has its own", () => {
+  // Literal glyphs, not "whatever this kind currently returns": deriving the
+  // expectation from the code under test made the whole check self-consistent,
+  // and inverting the document branch stayed green.
+  const byKind = { image: "\u{f02e9}", video: "\u{f022b}", document: "\u{f0219}", other: "\u{f0214}" }
+  assert.equal(Model.fileGlyph("a.png"), byKind.image)
+  assert.equal(Model.fileGlyph("a.mp4"), byKind.video)
+  assert.equal(Model.fileGlyph("a.docx"), byKind.document)
+  assert.equal(Model.fileGlyph("a.bin"), byKind.other)
+  const drawn = Object.values(byKind)
+  assert.equal(new Set(drawn).size, drawn.length, "two file kinds share a glyph")
+  assert.equal(Model.fileGlyph("report.pdf"), byKind.document)
+  assert.equal(Model.fileGlyph("notes.txt"), byKind.document)
+  assert.equal(Model.fileGlyph("photo.JPG"), byKind.image, "extensions are case-insensitive")
+  assert.equal(Model.fileGlyph(""), byKind.other)
+})
+
+test("the hero line names the sync mode only when it means something", () => {
+  // Before sign-in the client reports a mode it is not using. Showing
+  // "Sign in required · Two-way" reads as though syncing were configured.
+  assert.equal(Model.heroMeta({ statusText: "Monitoring", authenticated: true, syncMode: "Two-way" }),
+    "Monitoring · Two-way")
+  assert.equal(Model.heroMeta({ statusText: "Sign in required", authenticated: false, syncMode: "Two-way" }),
+    "Sign in required")
+  assert.equal(Model.heroMeta({ statusText: "Monitoring", authenticated: true, syncMode: "" }),
+    "Monitoring")
+  assert.equal(Model.heroMeta(null), "Checking…")
+})
