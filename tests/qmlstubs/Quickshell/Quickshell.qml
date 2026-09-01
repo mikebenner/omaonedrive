@@ -20,6 +20,18 @@ QtObject {
     processesChanged()
   }
 
+  // An account removed by discovery takes its delegate -- and its Processes --
+  // with it. Leaving them in this list handed the harness zombie objects whose
+  // methods no longer exist, and the exception that caused was swallowed by the
+  // step loop.
+  function unregister(process) {
+    var kept = []
+    for (var i = 0; i < processes.length; i++) {
+      if (processes[i] !== process) kept.push(processes[i])
+    }
+    processes = kept
+  }
+
   function reset() {
     processes = []
     detached = []

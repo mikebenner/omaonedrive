@@ -107,6 +107,9 @@ Panel {
 
   function open() {
     root.controller.show()
+    // Before anything reads the selection: the panel's own bindings, and every
+    // control in it, follow selectedAccount.
+    oneDrive.selectBadgedAccount()
     oneDrive.refreshSelected()
     oneDrive.retryStaleQuotaOnOpen()
     Qt.callLater(function() {

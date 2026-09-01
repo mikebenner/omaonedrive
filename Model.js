@@ -398,6 +398,31 @@ function aggregateTooltip(accounts, nowMs, maxLines) {
 // language does not grow with the state list: several states share a badge and
 // the tooltip distinguishes them, because at eight pixels a badge can only
 // carry "something is wrong", "signed out", "paused" or "working".
+// What the bar icon does with an aggregate: lit or dim, spinning or not.
+//
+// This lived as three expressions in BarWidget.qml, which derives from the bar's
+// own BarWidget type and so cannot be instantiated by any harness. A reviewer
+// demonstrated the cost: the old broken `installed` expression -- the one that
+// dimmed a bar with a healthy account syncing because some OTHER account was
+// missing -- could be restored there with the entire suite still green.
+function barState(aggregate) {
+  var summary = aggregate && typeof aggregate === "object" ? aggregate : {}
+  var kind = String(summary.kind || "")
+  // Lit while ANY account is working, so one paused account does not dim a bar
+  // that is still syncing two others.
+  var anyActive = summary.anyActive === true
+  return {
+    active: anyActive,
+    syncing: kind === "syncing" || kind === "starting",
+    // Dimming asks whether ANYTHING is usable, which is not the question the
+    // badge answers. Deriving it from the badge kind left the icon undimmed
+    // before the first poll, and undimmed while showing the missing-client badge
+    // for an account whose unit is merely unavailable.
+    installed: summary.initialized === true
+      && (anyActive || (kind !== "missing" && kind !== "unavailable"))
+  }
+}
+
 function badgeKind(kind) {
   if (kind === "resync" || kind === "reauth" || kind === "failed") return "attention"
   if (kind === "missing" || kind === "unavailable") return "missing"
@@ -405,6 +430,34 @@ function badgeKind(kind) {
   if (kind === "paused") return "paused"
   if (kind === "starting" || kind === "syncing") return "syncing"
   return ""   // healthy, and checking before the first poll
+}
+
+// Which account the panel should show when it is opened from the bar.
+//
+// The badge is worst-of-N, but every control in the panel -- the buttons, the
+// keyboard shortcuts, right-click Storage, middle-click Folder, and the IPC
+// controls -- acts on the SELECTED account, which stays wherever the user last
+// left it (the first discovered account, until they pick a tab). So the bar
+// could show "reauthentication required" for Work while the panel opened on a
+// perfectly healthy Personal, and pressing P paused Personal.
+//
+// Returns the service to select, or "" to leave the selection alone. The user's
+// own choice is only overridden when it is not itself asking for attention:
+// having deliberately opened Work to deal with it, they must not be bounced to
+// Personal the moment Personal goes wrong too.
+function openSelection(worstService, worstKind, selectedKind) {
+  if (!worstService) return ""
+  if (!needsAttention(worstKind)) return ""
+  if (needsAttention(selectedKind)) return ""
+  return worstService
+}
+
+// The states that put a badge on the bar and have something for the user to do.
+// "paused" is deliberate and "syncing" is progress, so neither steals a
+// selection.
+function needsAttention(kind) {
+  return kind === "resync" || kind === "reauth" || kind === "failed"
+    || kind === "missing" || kind === "login" || kind === "unavailable"
 }
 
 // Compose one desktop notification from the events of a single polling burst.
@@ -581,7 +634,9 @@ function nextPollIndex(accounts, cursor) {
   var list = Array.isArray(accounts) ? accounts : []
   if (list.length === 0) return -1
   var start = ((cursor % list.length) + list.length) % list.length
-  for (var pass = 0; pass < 2; pass++) {
+  // Three passes: an account waiting on the result of a control it just ran,
+  // then one that has never been attempted, then everyone else.
+  for (var pass = 0; pass < 3; pass++) {
     for (var step = 0; step < list.length; step++) {
       var index = (start + step) % list.length
       var account = list[index]
@@ -591,7 +646,12 @@ function nextPollIndex(accounts, cursor) {
       // Priority is "has not been ATTEMPTED yet", not "has not reported". An
       // account whose helper always fails never reports, and gating on that gave
       // it every slot forever while the healthy accounts went unpolled.
-      if (pass === 0 && account.attempted === true) continue
+      // An account that has just paused or resumed is holding an optimistic
+      // state that only a fresh poll can confirm or drop. Until it gets one the
+      // bar shows the pre-control sample, so it goes first -- ahead even of the
+      // startup ramp, which is at worst a few seconds of "checking".
+      if (pass === 0 && account.settling !== true) continue
+      if (pass === 1 && account.attempted === true) continue
       return index
     }
   }
@@ -734,7 +794,10 @@ if (typeof module !== "undefined") {
     aggregateAccounts: aggregateAccounts,
     aggregateTooltip: aggregateTooltip,
     composeNotification: composeNotification,
+    barState: barState,
     badgeKind: badgeKind,
+    openSelection: openSelection,
+    needsAttention: needsAttention,
     badgeGlyph: badgeGlyph,
     nextPollIndex: nextPollIndex,
     cloudDecision: cloudDecision,

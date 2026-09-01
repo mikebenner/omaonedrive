@@ -22,20 +22,13 @@ BarWidget {
     : ({ kind: "checking", count: 0, anyActive: false, initialized: false })
   readonly property int accountCount: service ? service.accountCount : 0
 
-  // The icon stays lit while ANY account is working, so one paused account does
-  // not dim a bar that is still syncing two others.
-  readonly property bool active: aggregate.anyActive === true
-  readonly property bool syncing: aggregate.kind === "syncing" || aggregate.kind === "starting"
-  // Dimming asks "is anything actually usable", which is not the question the
-  // badge answers. Deriving it from the badge kind left the icon undimmed before
-  // the first poll, and undimmed while showing the missing-client badge for an
-  // account whose unit is merely unavailable.
-  // Dimming asks whether ANYTHING is usable, so it follows anyActive rather than
-  // the worst account's kind: one missing account must not dim a bar that has a
-  // healthy one syncing.
-  readonly property bool installed: aggregate.initialized === true
-    && (aggregate.anyActive === true
-        || (aggregate.kind !== "missing" && aggregate.kind !== "unavailable"))
+  // Lit/dim/spinning is decided in Model.js, not here: nothing in this file can
+  // be instantiated by a test, so an expression written inline is one no
+  // assertion can reach. tests/Aggregate.test.js pins the rules.
+  readonly property var barState: Model.barState(aggregate)
+  readonly property bool active: barState.active
+  readonly property bool syncing: barState.syncing
+  readonly property bool installed: barState.installed
   readonly property color iconColor: active
     ? (bar ? bar.barForeground : Color.foreground)
     : Qt.darker(bar ? bar.barForeground : Color.foreground, 1.55)

@@ -321,3 +321,93 @@ test("the single-account badge is compared against the old ternary exhaustively"
   assert.deepEqual(unexplained, [],
     "undeclared badge divergence from origin/main: " + JSON.stringify(unexplained.slice(0, 3), null, 1))
 })
+
+// --- which account the panel opens on ----------------------------------------
+//
+// The badge is worst-of-N; every control in the panel acts on the SELECTED
+// account. Those were unrelated, so the bar could show "reauthentication
+// required" for Work while the panel opened on a healthy Personal -- and the
+// P key, right-click Storage and the IPC controls all acted on Personal.
+
+test("opening the panel moves to the account the badge is blaming", () => {
+  assert.equal(Model.openSelection("onedrive@work.service", "reauth", "healthy"),
+    "onedrive@work.service")
+  assert.equal(Model.openSelection("onedrive@work.service", "resync", "syncing"),
+    "onedrive@work.service")
+  assert.equal(Model.openSelection("onedrive@work.service", "failed", "paused"),
+    "onedrive@work.service")
+  assert.equal(Model.openSelection("onedrive@work.service", "missing", "healthy"),
+    "onedrive@work.service")
+})
+
+test("a selection the user made for a reason is not stolen", () => {
+  // Having opened Work to deal with its reauth, the user must not be bounced to
+  // Personal the moment Personal fails too.
+  assert.equal(Model.openSelection("onedrive@personal.service", "resync", "reauth"), "")
+  assert.equal(Model.openSelection("onedrive@personal.service", "failed", "login"), "")
+})
+
+test("a healthy fleet never moves the selection", () => {
+  for (const kind of ["healthy", "syncing", "starting", "paused", "checking", ""]) {
+    assert.equal(Model.openSelection("onedrive@a.service", kind, "healthy"), "",
+      kind + " must not steal the selection")
+  }
+  // A deliberate pause is not a problem to be shown; nor is progress.
+  assert.equal(Model.needsAttention("paused"), false)
+  assert.equal(Model.needsAttention("syncing"), false)
+  assert.equal(Model.needsAttention("healthy"), false)
+  assert.equal(Model.needsAttention("checking"), false)
+  // ...and every kind that puts an actionable badge on the bar does.
+  for (const kind of ["resync", "reauth", "failed", "missing", "login", "unavailable"]) {
+    assert.equal(Model.needsAttention(kind), true, kind + " must be actionable")
+  }
+})
+
+test("nothing to blame means nothing to select", () => {
+  assert.equal(Model.openSelection("", "reauth", "healthy"), "")
+  assert.equal(Model.openSelection(null, "reauth", "healthy"), "")
+})
+
+// --- what the bar icon does with an aggregate --------------------------------
+
+test("the icon is lit whenever any account is working", () => {
+  assert.equal(Model.barState({ kind: "paused", anyActive: true, initialized: true }).active, true)
+  assert.equal(Model.barState({ kind: "healthy", anyActive: false, initialized: true }).active, false)
+})
+
+test("the icon spins for progress, and only for progress", () => {
+  assert.equal(Model.barState({ kind: "syncing" }).syncing, true)
+  assert.equal(Model.barState({ kind: "starting" }).syncing, true)
+  for (const kind of ["healthy", "paused", "reauth", "resync", "failed", "checking"]) {
+    assert.equal(Model.barState({ kind: kind }).syncing, false, kind)
+  }
+})
+
+test("one missing account does not dim a bar that has a healthy one syncing", () => {
+  // The regression a reviewer restored with the whole suite green: deriving the
+  // dim from the WORST account's kind blanked a bar that was working fine.
+  assert.equal(Model.barState({
+    kind: "missing", anyActive: true, initialized: true }).installed, true)
+  assert.equal(Model.barState({
+    kind: "unavailable", anyActive: true, initialized: true }).installed, true)
+})
+
+test("a fleet with nothing usable is dimmed", () => {
+  assert.equal(Model.barState({
+    kind: "missing", anyActive: false, initialized: true }).installed, false)
+  assert.equal(Model.barState({
+    kind: "unavailable", anyActive: false, initialized: true }).installed, false)
+  // ...but a merely paused fleet is installed, just idle.
+  assert.equal(Model.barState({
+    kind: "paused", anyActive: false, initialized: true }).installed, true)
+})
+
+test("nothing is claimed before the first poll", () => {
+  const checking = Model.barState({ kind: "checking", anyActive: false, initialized: false })
+  assert.equal(checking.installed, false)
+  assert.equal(checking.active, false)
+  assert.equal(checking.syncing, false)
+  // A missing aggregate must not throw on the way to the bar.
+  assert.deepEqual(Model.barState(null), { active: false, syncing: false, installed: false })
+  assert.deepEqual(Model.barState(undefined), { active: false, syncing: false, installed: false })
+})

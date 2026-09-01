@@ -107,10 +107,20 @@ Item {
       // Only a real repoint: "" means "not yet known", and the seeded descriptor
       // always starts that way, so treating it as a change wiped the first
       // sample and the edge latches on every startup.
-      if (existing.confdir !== "" && descriptor.confdir !== ""
-          && existing.confdir !== descriptor.confdir) {
+      if (existing.confdir !== descriptor.confdir) {
         var account = accountForService(descriptor.service)
-        if (account) account.forgetSample()
+        if (existing.confdir !== "" && descriptor.confdir !== "") {
+          if (account) account.forgetSample()
+        } else if (account) {
+          // "" -> a real directory is the startup seed learning its identity,
+          // not a repoint: there is no sample to wipe, and wiping one reset the
+          // edge latches on every startup. But a poll already in flight was
+          // started against the CLIENT's default directory, which is only the
+          // same directory if this unit does not override it. Refuse that reply
+          // rather than attach another account's sync directory and quota to
+          // this one.
+          account.discardInFlight()
+        }
       }
       descriptors.set(plan.updates[update].index, descriptor)
     }
@@ -191,7 +201,8 @@ Item {
       rows.push({
         routinePolling: _accountObjects[index].routinePolling,
         busy: _accountObjects[index].statusBusy,
-        attempted: _accountObjects[index].attempted
+        attempted: _accountObjects[index].attempted,
+        settling: _accountObjects[index].settling
       })
     }
     return rows
@@ -256,11 +267,22 @@ Item {
     if (cloudBusyAccount() !== null) return
     if (_cloudQueue.length === 0) return
     var next = _cloudQueue.slice()
-    var entry = next.shift()
+    // Keep taking entries until one belongs to an account that still exists.
+    // Stopping after a single shift meant an account removed by discovery while
+    // queued took the whole rest of the queue with it: the entries behind it
+    // stayed put and no cloud check started, so the accounts waiting on a
+    // storage figure showed "Not checked" until some later poll happened to
+    // call back in -- and never, if polling was itself blocked.
+    while (next.length > 0) {
+      var entry = next.shift()
+      var account = accountForService(entry.service)
+      if (account) {
+        _cloudQueue = next
+        account.startCloudCheck(entry.mode)
+        return
+      }
+    }
     _cloudQueue = next
-    var account = accountForService(entry.service)
-    // An account removed while queued simply drops out.
-    if (account) account.startCloudCheck(entry.mode)
   }
 
   // --- notification broker --------------------------------------------------
@@ -383,6 +405,17 @@ Item {
     if (remote === true) { selectedAccount.refresh(true); return }
     refreshSelected()
   }
+  // Called when the panel is opened from the bar: point it at the account the
+  // badge is blaming, so the controls act on what the user just clicked about.
+  function selectBadgedAccount() {
+    var worst = aggregate.worst
+    if (!worst) return
+    var current = selectedAccount
+    var target = Model.openSelection(worst.service, aggregate.kind,
+      current ? Model.accountStateKind(current) : "")
+    if (target !== "" && target !== selectedService) selectAccount(target, false)
+  }
+
   function refreshSelected() {
     if (selectedAccount && !routinePollRunning()) selectedAccount.refresh(false)
   }

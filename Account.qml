@@ -19,6 +19,10 @@ Item {
   property string description: ""
 
   readonly property string displayName: Model.accountName(instance, description)
+  // Waiting to be told what a control actually did. The coordinator gives these
+  // the next poll slot: without that the answer could be swallowed indefinitely
+  // by a neighbour's polling, and the bar would keep showing pre-control state.
+  readonly property bool settling: settleTimer.waiting
   readonly property string resumeUnit: Commands.resumeUnit(instance)
   // True once a status poll has produced a usable sample. Until then this
   // account contributes no state to the aggregate, so default values cannot
@@ -50,6 +54,20 @@ Item {
   property bool syncing: false
   property string syncStage: ""
   property int _desired: -1
+  // Real Quickshell sets `running` false WITHOUT ever emitting `exited` when the
+  // executable cannot be started -- a missing python3, a helper deleted under
+  // us, a systemd-run that is not on PATH. Every one of these processes cleans
+  // up only in onExited, and the coordinator's one-poll-at-a-time gate hangs off
+  // `refreshing`, so a single unstartable command froze routine polling for
+  // EVERY account for the life of the session. Each process therefore settles on
+  // whichever signal arrives first, and settles exactly once.
+  property bool _statusSettled: true
+  property bool _controlSettled: true
+  property bool _cancelSettled: true
+  property bool _scheduleSettled: true
+  // Counts samples actually APPLIED, so the settle timer can tell "the poll came
+  // back and disagreed" from "no poll ever ran".
+  property int _samples: 0
   readonly property bool active: _desired === -1
     ? (running || activeState === "activating") : _desired === 1
   property bool refreshing: false
@@ -104,6 +122,13 @@ Item {
 
   // Must match QUOTA_TIMEOUT_SECONDS / SYNC_STATUS_TIMEOUT_SECONDS in onedrive-status.py.
   readonly property int cloudTimeoutSec: 30
+  // How long a routine poll may run before it is abandoned, and how long the
+  // settle loop waits between asking for the result of a control. Both are
+  // settings rather than constants only so the test harness can drive them in
+  // milliseconds instead of minutes; nothing sets them in production.
+  readonly property int statusTimeoutMs: intSetting("statusTimeoutMs",
+    Math.max(60, cloudTimeoutSec * 2) * 1000, 200, 600000)
+  readonly property int settleIntervalMs: intSetting("settleIntervalMs", 1200, 20, 60000)
   readonly property int cloudRetryAfterSec: 300
 
   property string _cloudRequested: ""
@@ -132,6 +157,19 @@ Item {
 
   // Drop everything derived from a previous config directory, keeping identity
   // and in-flight processes. The next poll repopulates it.
+  // Discard whatever is in flight without touching what is on screen.
+  //
+  // The startup seed polls `onedrive.service` before discovery has told us its
+  // config directory, so that poll uses the CLIENT's default. If the unit's
+  // ExecStart names a different --confdir, the reply describes a different
+  // account: its sync directory, quota and token state would be applied under
+  // this one's name, and "Open folder" would open the wrong tree. Nothing is
+  // displayed yet at that point, so there is no sample worth forgetting -- only
+  // a reply worth refusing.
+  function discardInFlight() {
+    generation += 1
+  }
+
   function forgetSample() {
     // Any reply already in flight was started under the previous config
     // directory; this makes onExited drop it.
@@ -261,6 +299,8 @@ Item {
     _statusOutput = ""
     _statusError = ""
     _pendingGeneration = generation
+    _statusSettled = false
+    statusWatchdog.restart()
     refreshing = true
     if (cloudMode !== "") {
       actionStatusTimer.stop()
@@ -318,6 +358,7 @@ Item {
     reauthRequired = parsed.reauthRequired === true
     syncing = parsed.syncing === true
     syncStage = String(parsed.syncStage || "")
+    _samples += 1
     if (_desired !== -1 && running === (_desired === 1)) _desired = -1
     statusText = String(parsed.statusText || (installed ? "Sync paused" : "Not installed"))
     syncDir = String(parsed.syncDir || "")
@@ -363,6 +404,26 @@ Item {
       report("storage", "OneDrive storage almost full", "Almost full",
         Model.freeText(usedBytes, quotaBytes, quotaKnown) + " of "
           + Model.formatBytes(quotaBytes) + " remains.")
+  }
+
+  // Reached when the status process stopped without an exit -- it could not be
+  // started, or the watchdog gave up on it. Everything onExited would have
+  // released has to be released here too, or the account keeps the coordinator's
+  // poll slot and no other account is ever polled again.
+  function abandonStatus(reason) {
+    if (_statusSettled) return
+    _statusSettled = true
+    statusWatchdog.stop()
+    refreshing = false
+    if (_pendingGeneration === generation) {
+      attempted = true
+      lastError = reason
+    }
+    _activeCloudMode = ""
+    _cloudRequested = ""
+    _quotaRetryQueued = false
+    accountStateChanged()
+    pollFinished(root.service)
   }
 
   function elideStatus(text) {
@@ -443,6 +504,7 @@ Item {
     _controlOutput = ""
     _controlError = ""
     controlProcess.command = command
+    _controlSettled = false
     controlProcess.running = true
   }
 
@@ -458,7 +520,14 @@ Item {
     _timerOutput = ""
     _timerError = ""
     cancelTimerProcess.command = Commands.cancelResume(resumeUnit)
+    _cancelSettled = false
     cancelTimerProcess.running = true
+  }
+
+  function settleResumeTimerCancel() {
+    if (_cancelSettled) return
+    _cancelSettled = true
+    afterResumeTimerCancelled()
   }
 
   // Shared by the cancel process and by the no-timer path, which has nothing to
@@ -486,6 +555,7 @@ Item {
     _timerOutput = ""
     _timerError = ""
     scheduleTimerProcess.command = Commands.scheduleResume(resumeUnit, service, minutes)
+    _scheduleSettled = false
     scheduleTimerProcess.running = true
   }
 
@@ -516,19 +586,59 @@ Item {
     onTriggered: root.requestRefresh()
   }
 
+  // After a control succeeds, keep asking until a poll taken AFTER it lands.
+  //
+  // This used to give up after five ticks and clear the optimistic state
+  // unconditionally. `requestRefresh` is drop-not-queue, so with two or three
+  // accounts a neighbour holding the shared poll slot swallowed every one of
+  // those five asks -- and six seconds after the user paused Work, the bar
+  // reverted to "Monitoring" from a sample that predated the pause, while the
+  // unit was really stopped. Reverting to known-stale data is strictly worse
+  // than holding the user's intent, so the intent is now held until fresh truth
+  // arrives (`applyStatus` clears it the moment reality agrees) or the account
+  // gives up asking entirely.
   Timer {
     id: settleTimer
     property int ticks: 0
-    interval: 1200
+    property int baseline: 0
+    // Whether this account is waiting to be told what a control actually did.
+    // The coordinator gives it the next poll slot, so the answer arrives in one
+    // round rather than never.
+    readonly property bool waiting: running && root._samples === baseline
+    interval: root.settleIntervalMs
     repeat: true
     onTriggered: {
       ticks += 1
       root.requestRefresh()
-      if (ticks >= 5) {
+      if (root._samples !== baseline) {
+        // A poll taken after the control has landed and applyStatus has had its
+        // say. Anything still optimistic now is a genuine divergence.
         ticks = 0
         stop()
         root._desired = -1
+      } else if (ticks >= 30) {
+        // ~36s of a completely blocked slot. Stop asking, but leave the intent
+        // alone: the next successful poll clears it through applyStatus.
+        ticks = 0
+        stop()
       }
+    }
+  }
+
+  // A helper that never exits -- a wedged python3, an os.walk over a stalled
+  // network mount -- held the single poll slot forever, and with it every other
+  // account's polling. Nothing else in the stack bounds this: the helper's own
+  // 30s limit covers only its outbound CLI calls, not its local directory scan.
+  Timer {
+    id: statusWatchdog
+    interval: root.statusTimeoutMs
+    repeat: false
+    onTriggered: {
+      if (root._statusSettled) return
+      // Assigning false terminates it in real Quickshell; the exit that follows
+      // finds the process already settled and is ignored.
+      statusProcess.running = false
+      root.abandonStatus("OneDrive status check timed out")
     }
   }
 
@@ -553,7 +663,18 @@ Item {
       waitForEnd: true
       onStreamFinished: root._statusError = text
     }
+    onRunningChanged: {
+      // Ordering between `exited` and `running` is not ours to rely on, so defer:
+      // by the time this runs, a real exit has already settled the process and
+      // this is a no-op. Only a failure to start reaches abandonStatus.
+      if (!running) Qt.callLater(function() {
+        root.abandonStatus("Could not run the OneDrive status helper")
+      })
+    }
     onExited: function(exitCode) {
+      if (root._statusSettled) return
+      root._statusSettled = true
+      statusWatchdog.stop()
       var cloudMode = root._activeCloudMode
       root.refreshing = false
       // Only a reply for the CURRENT identity counts as an attempt; a discarded
@@ -606,7 +727,29 @@ Item {
     command: []
     stdout: StdioCollector { waitForEnd: true }
     stderr: StdioCollector { waitForEnd: true }
-    onExited: function(exitCode) { root.afterResumeTimerCancelled() }
+    // A cancel that cannot even start must still let the action it precedes
+    // through, or pause and resume simply do nothing from then on.
+    onRunningChanged: { if (!running) Qt.callLater(root.settleResumeTimerCancel) }
+    onExited: function(exitCode) { root.settleResumeTimerCancel() }
+  }
+
+  function settleResumeSchedule(exitCode) {
+    if (_scheduleSettled) return
+    _scheduleSettled = true
+    var stdout = String(timerStdout.text || _timerOutput || "")
+    var stderr = String(timerStderr.text || _timerError || "")
+    if (exitCode !== 0) {
+      lastError = elideStatus(stderr || stdout || "Could not schedule OneDrive resume")
+      actionStatus = "Timed pause failed; resuming syncing…"
+      _scheduleRecovery = true
+      // Recovery starts the SAME service the pause stopped.
+      runControl(Commands.control("start", root.service), 1)
+    } else {
+      lastError = ""
+      actionStatus = "Timed pause scheduled"
+      actionStatusTimer.restart()
+      requestRefresh()
+    }
   }
 
   Process {
@@ -623,22 +766,43 @@ Item {
       waitForEnd: true
       onStreamFinished: root._timerError = text
     }
-    onExited: function(exitCode) {
-      var stdout = String(timerStdout.text || root._timerOutput || "")
-      var stderr = String(timerStderr.text || root._timerError || "")
-      if (exitCode !== 0) {
-        root.lastError = root.elideStatus(stderr || stdout || "Could not schedule OneDrive resume")
-        root.actionStatus = "Timed pause failed; resuming syncing…"
-        root._scheduleRecovery = true
-        // Recovery starts the SAME service the pause stopped.
-        root.runControl(Commands.control("start", root.service), 1)
-      } else {
-        root.lastError = ""
-        root.actionStatus = "Timed pause scheduled"
+    // systemd-run failing to START is the same outcome for the user as it
+    // failing: the account is already stopped and nothing will resume it. Take
+    // the recovery path rather than leaving it paused indefinitely.
+    onRunningChanged: {
+      if (!running) Qt.callLater(function() { root.settleResumeSchedule(127) })
+    }
+    onExited: function(exitCode) { root.settleResumeSchedule(exitCode) }
+  }
+
+  function settleControl(exitCode) {
+    if (_controlSettled) return
+    _controlSettled = true
+    var desired = root._controlDesired
+    root._controlDesired = -1
+    var stdout = String(controlStdout.text || root._controlOutput || "")
+    var stderr = String(controlStderr.text || root._controlError || "")
+    if (exitCode !== 0) {
+      root._desired = -1
+      root._pauseMinutes = 0
+      root._scheduleRecovery = false
+      root.lastError = root.elideStatus(stderr || stdout || "OneDrive service command failed")
+    } else {
+      root.lastError = ""
+      settleTimer.ticks = 0
+      settleTimer.baseline = root._samples
+      settleTimer.start()
+      if (desired === 0 && root._pauseMinutes > 0) {
+        var minutes = root._pauseMinutes
+        root._pauseMinutes = 0
+        root.scheduleResume(minutes)
+      } else if (root._scheduleRecovery) {
+        root._scheduleRecovery = false
+        root.actionStatus = "Timed pause failed; syncing resumed"
         actionStatusTimer.restart()
-        root.requestRefresh()
       }
     }
+    delayedRefresh.restart()
   }
 
   Process {
@@ -655,31 +819,12 @@ Item {
       waitForEnd: true
       onStreamFinished: root._controlError = text
     }
-    onExited: function(exitCode) {
-      var desired = root._controlDesired
-      root._controlDesired = -1
-      var stdout = String(controlStdout.text || root._controlOutput || "")
-      var stderr = String(controlStderr.text || root._controlError || "")
-      if (exitCode !== 0) {
-        root._desired = -1
-        root._pauseMinutes = 0
-        root._scheduleRecovery = false
-        root.lastError = root.elideStatus(stderr || stdout || "OneDrive service command failed")
-      } else {
-        root.lastError = ""
-        settleTimer.ticks = 0
-        settleTimer.start()
-        if (desired === 0 && root._pauseMinutes > 0) {
-          var minutes = root._pauseMinutes
-          root._pauseMinutes = 0
-          root.scheduleResume(minutes)
-        } else if (root._scheduleRecovery) {
-          root._scheduleRecovery = false
-          root.actionStatus = "Timed pause failed; syncing resumed"
-          actionStatusTimer.restart()
-        }
-      }
-      delayedRefresh.restart()
+    // A control that could not start leaves the unit exactly as it was, so the
+    // optimistic state has to be dropped -- otherwise the bar claims a pause
+    // that never happened.
+    onRunningChanged: {
+      if (!running) Qt.callLater(function() { root.settleControl(127) })
     }
+    onExited: function(exitCode) { root.settleControl(exitCode) }
   }
 }

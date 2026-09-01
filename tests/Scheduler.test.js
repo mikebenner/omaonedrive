@@ -158,3 +158,49 @@ test("a request identical to the one already RUNNING is dropped", () => {
   // Without the active pair the old behaviour is unchanged.
   assert.equal(Model.cloudDecision(true, [], "a.service", "quota"), "queue")
 })
+
+test("an account waiting on a control it just ran gets the next slot", () => {
+  // `requestRefresh` is drop-not-queue, so the settle loop's asks are swallowed
+  // whenever a neighbour holds the shared slot. With two or three accounts that
+  // meant the poll confirming a pause could be delayed indefinitely -- and the
+  // bar reverted to a sample taken before the pause. Settling therefore outranks
+  // even the startup ramp, which costs at most a few seconds of "Checking".
+  const accounts = [
+    acct({ attempted: true }),
+    acct({ attempted: false }),
+    acct({ attempted: true, settling: true })
+  ]
+  assert.equal(Model.nextPollIndex(accounts, 0), 2)
+  // ...from any cursor position, since the user's click decides urgency, not
+  // where the round-robin happened to be.
+  assert.equal(Model.nextPollIndex(accounts, 1), 2)
+  assert.equal(Model.nextPollIndex(accounts, 2), 2)
+})
+
+test("a settling account that is busy still does not get a slot it would refuse", () => {
+  assert.equal(Model.nextPollIndex(
+    [acct({ settling: true, routinePolling: true }), acct()], 0), 1)
+  assert.equal(Model.nextPollIndex(
+    [acct({ settling: true, busy: true }), acct()], 0), 1)
+})
+
+test("two settling accounts interleave rather than one taking every slot", () => {
+  const accounts = [acct({ settling: true }), acct({ settling: true }), acct()]
+  const picks = []
+  let cursor = 0
+  for (let i = 0; i < 4; i++) {
+    const index = Model.nextPollIndex(accounts, cursor)
+    picks.push(index)
+    cursor = (index + 1) % accounts.length
+  }
+  assert.deepEqual(picks, [0, 1, 0, 1])
+})
+
+test("settling priority does not disturb the ordinary round-robin", () => {
+  // Nothing settling: the previous behaviour, unchanged.
+  const accounts = [acct(), acct(), acct()]
+  assert.deepEqual([0, 1, 2, 0].map((_, i) => Model.nextPollIndex(accounts, i)),
+    [0, 1, 2, 0])
+  // Ramp still beats steady state when nothing is settling.
+  assert.equal(Model.nextPollIndex([acct(), acct({ attempted: false })], 0), 1)
+})
