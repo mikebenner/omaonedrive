@@ -9,6 +9,31 @@ node --test "$root/tests/Model.test.js" "$root/tests/IpcLifecycle.test.js" \
   "$root/tests/Discovery.test.js" "$root/tests/Notifications.test.js" \
   "$root/tests/Scheduler.test.js" "$root/tests/PanelWiring.test.js"
 
+# Nothing else in this suite PARSES BarWidget.qml or Panel.qml. Both derive from
+# the bar's own types, so the harness cannot instantiate them, and a syntax error
+# in either -- a thousand lines of panel, in Panel.qml's case -- would leave the
+# whole suite green while the widget failed to load at all.
+#
+# qmllint cannot resolve qs.Commons or qs.Ui outside Omarchy, so most of what it
+# reports here is import noise. These two categories are structural and say
+# nothing about imports: a parse failure, and a property bound twice.
+qmllint_runner=$(command -v qmllint || echo /usr/lib/qt6/bin/qmllint)
+if [ -x "$qmllint_runner" ]; then
+  qmllint_bad=0
+  for qml_file in "$root"/*.qml "$root"/tests/qml/*.qml; do
+    [ -f "$qml_file" ] || continue
+    lint=$("$qmllint_runner" -I "$root" -I "$root/tests/qmlstubs" "$qml_file" 2>&1 \
+      | grep -E '\[(syntax|duplicate-property-binding)\]' || true)
+    if [ -n "$lint" ]; then
+      echo "$lint" >&2
+      qmllint_bad=1
+    fi
+  done
+  [ "$qmllint_bad" -eq 0 ] || { echo "qmllint found a structural error" >&2; exit 1; }
+else
+  echo "qmllint SKIPPED (not installed)" >&2
+fi
+
 # Executes the real Service.qml and Account.qml against stub Quickshell types.
 # Skipped rather than failed where qml6 is unavailable, so the suite still runs
 # on a machine without Qt tooling -- but it is the only coverage of the
