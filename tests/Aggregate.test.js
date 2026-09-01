@@ -140,7 +140,6 @@ test("pausing during a transfer dims the icon at once", () => {
   })]
   const summary = Model.aggregateAccounts(midTransfer)
   assert.equal(summary.kind, "paused")
-  assert.equal(summary.badge, "paused")
   assert.equal(summary.anyActive, false, "the icon must dim")
   assert.equal(Model.barState(summary).active, false)
   assert.equal(Model.barState(summary).syncing, false)
@@ -363,26 +362,21 @@ test("the single-account badge is compared against the old ternary exhaustively"
 // P key, right-click Storage and the IPC controls all acted on Personal.
 
 // `summary` is the aggregate as the coordinator has it.
-function summaryOf(kind, badge, worstService, progressService) {
-  return {
-    kind: kind,
-    badge: badge === undefined ? kind : badge,
-    worst: worstService ? { service: worstService } : null,
-    progress: progressService ? { service: progressService } : null
-  }
+function summaryOf(kind, worstService) {
+  return { kind: kind, worst: worstService ? { service: worstService } : null }
 }
 
 test("opening the panel moves to the account the badge is blaming", () => {
   for (const kind of ["reauth", "resync", "failed", "missing", "login", "unavailable"]) {
     assert.equal(
-      Model.openSelection(summaryOf(kind, kind, "onedrive@work.service"), "healthy"),
+      Model.openSelection(summaryOf(kind, "onedrive@work.service"), "healthy"),
       "onedrive@work.service", kind)
   }
   assert.equal(
-    Model.openSelection(summaryOf("resync", "resync", "onedrive@work.service"), "syncing"),
+    Model.openSelection(summaryOf("resync", "onedrive@work.service"), "syncing"),
     "onedrive@work.service")
   assert.equal(
-    Model.openSelection(summaryOf("failed", "failed", "onedrive@work.service"), "paused"),
+    Model.openSelection(summaryOf("failed", "onedrive@work.service"), "paused"),
     "onedrive@work.service")
 })
 
@@ -390,30 +384,30 @@ test("a selection the user made for a reason is not stolen", () => {
   // Having opened Work to deal with its reauth, the user must not be bounced to
   // Personal the moment Personal fails too.
   assert.equal(
-    Model.openSelection(summaryOf("resync", "resync", "onedrive@personal.service"), "reauth"), "")
+    Model.openSelection(summaryOf("resync", "onedrive@personal.service"), "reauth"), "")
   assert.equal(
-    Model.openSelection(summaryOf("failed", "failed", "onedrive@personal.service"), "login"), "")
+    Model.openSelection(summaryOf("failed", "onedrive@personal.service"), "login"), "")
 })
 
 test("clicking a spinning bar reaches the account that is actually transferring", () => {
-  // The pause-vs-progress rule means the badge can be about a DIFFERENT account
-  // from the worst one. Clicking then landed on whatever was last selected --
-  // often the paused account, or the cold-boot default -- and the panel showed
-  // no sign of the transfer the bar was advertising.
-  const spinning = summaryOf("paused", "syncing", "onedrive@work.service",
-    "onedrive@personal.service")
+  // Under worst-first a spinning badge means the WORST account is the one
+  // transferring (a paused or broken account would outrank it), so the click
+  // goes there rather than to whatever was selected last -- often the cold-boot
+  // default. But never away from an account the user is already watching sync.
+  const spinning = summaryOf("syncing", "onedrive@personal.service")
   assert.equal(Model.openSelection(spinning, "paused"), "onedrive@personal.service")
   assert.equal(Model.openSelection(spinning, "healthy"), "onedrive@personal.service")
-  // ...but not away from an account that needs attention, nor from one the user
-  // is already watching sync.
-  assert.equal(Model.openSelection(spinning, "reauth"), "")
   assert.equal(Model.openSelection(spinning, "syncing"), "")
   assert.equal(Model.openSelection(spinning, "starting"), "")
+  const starting = summaryOf("starting", "onedrive@personal.service")
+  assert.equal(Model.openSelection(starting, "healthy"), "onedrive@personal.service")
+  // A paused fleet does not spin, and does not move the selection.
+  assert.equal(Model.openSelection(summaryOf("paused", "onedrive@work.service"), "healthy"), "")
 })
 
 test("a healthy fleet never moves the selection", () => {
   for (const kind of ["healthy", "paused", "checking", ""]) {
-    assert.equal(Model.openSelection(summaryOf(kind, kind, "onedrive@a.service"), "healthy"), "",
+    assert.equal(Model.openSelection(summaryOf(kind, "onedrive@a.service"), "healthy"), "",
       kind + " must not steal the selection")
   }
   // A deliberate pause is not a problem to be shown; nor is progress.
@@ -427,9 +421,9 @@ test("a healthy fleet never moves the selection", () => {
 })
 
 test("nothing to blame means nothing to select", () => {
-  assert.equal(Model.openSelection(summaryOf("reauth", "reauth", ""), "healthy"), "")
-  assert.equal(Model.openSelection(summaryOf("reauth", "reauth", null), "healthy"), "")
-  assert.equal(Model.openSelection(summaryOf("paused", "syncing", "a", null), "healthy"), "")
+  assert.equal(Model.openSelection(summaryOf("reauth", ""), "healthy"), "")
+  assert.equal(Model.openSelection(summaryOf("reauth", null), "healthy"), "")
+  assert.equal(Model.openSelection(summaryOf("syncing", ""), "healthy"), "")
   assert.equal(Model.openSelection(null, "healthy"), "")
   assert.equal(Model.openSelection(undefined, "healthy"), "")
 })
@@ -534,58 +528,49 @@ test("an account whose helper keeps failing says so, however many accounts there
 
 // --- what the bar shows when one account is paused ----------------------------
 //
-// Worst-first is right for problems. A pause is a choice, not a problem, and
-// "paused" outranking "syncing" put a pause glyph on a bar whose other accounts
-// were transferring -- the same class of lie as the dim that one missing account
-// used to put on a healthy bar.
+// Worst-first, INCLUDING a pause. For one round the badge let progress outrank a
+// deliberate pause; the user overruled it: a paused account anywhere is a state
+// you must be shown, and every account has to be working before the bar looks
+// normal.
 
-test("one paused account does not stop a transferring bar from spinning", () => {
+test("one paused account puts the pause on the badge, whoever else is syncing", () => {
   const fleet = [
     account({ instance: "work", running: false, active: false, activeState: "inactive" }),
     account({ instance: "personal", syncing: true }),
     account({ instance: "archive" })
   ]
   const summary = Model.aggregateAccounts(fleet)
-  // The worst account is still the paused one -- the tooltip leads with it.
   assert.equal(summary.kind, "paused")
   assert.equal(summary.worst.instance, "work")
-  // ...but the badge follows the work actually happening.
-  assert.equal(summary.badge, "syncing")
-  assert.equal(Model.badgeKind(summary.badge), "syncing")
-  assert.equal(Model.barState(summary).syncing, true)
+  assert.equal(Model.badgeKind(summary.kind), "paused")
+  // The icon stays LIT -- two accounts are still working -- but it does not
+  // spin: the bar is reporting the pause, not the progress.
+  assert.equal(summary.anyActive, true)
   assert.equal(Model.barState(summary).active, true)
+  assert.equal(Model.barState(summary).syncing, false)
 })
 
-test("a problem still beats progress, whoever is syncing", () => {
-  // The rule is confined to the band BELOW attention. An account needing a
-  // resync must not be hidden because another one happens to be transferring.
-  for (const kind of ["resync", "reauth", "failed", "missing", "login", "unavailable"]) {
-    const overrides = {
-      resync: { resyncRequired: true }, reauth: { reauthRequired: true },
-      failed: { serviceFailed: true }, missing: { installed: false },
-      login: { authenticated: false }, unavailable: { serviceAvailable: false }
-    }[kind]
+test("a problem still outranks a pause, and a pause still outranks progress", () => {
+  const overrides = {
+    resync: { resyncRequired: true }, reauth: { reauthRequired: true },
+    failed: { serviceFailed: true }, missing: { installed: false },
+    login: { authenticated: false }, unavailable: { serviceAvailable: false }
+  }
+  for (const kind of Object.keys(overrides)) {
     const summary = Model.aggregateAccounts([
-      account(Object.assign({ instance: "bad" }, overrides)),
+      account(Object.assign({ instance: "bad" }, overrides[kind])),
+      account({ instance: "idle", running: false, active: false, activeState: "inactive" }),
       account({ instance: "busy", syncing: true })
     ])
-    assert.equal(summary.kind, kind, kind)
-    assert.equal(summary.badge, kind, kind + " must still reach the badge")
+    assert.equal(summary.kind, kind, kind + " must reach the badge past the pause")
   }
-})
-
-test("with nothing transferring, the paused account keeps the badge", () => {
-  const idle = Model.aggregateAccounts([
-    account({ instance: "work", running: false, active: false, activeState: "inactive" }),
-    account({ instance: "personal" })
+  // ...and with every account at least working, progress shows.
+  const allWorking = Model.aggregateAccounts([
+    account({ instance: "busy", syncing: true }),
+    account({ instance: "calm" })
   ])
-  assert.equal(idle.badge, "paused")
-  // An account merely STARTING counts as progress, like the badge already says.
-  const starting = Model.aggregateAccounts([
-    account({ instance: "work", running: false, active: false, activeState: "inactive" }),
-    account({ instance: "personal", activeState: "activating", running: false })
-  ])
-  assert.equal(starting.badge, "syncing")
+  assert.equal(allWorking.kind, "syncing")
+  assert.equal(Model.barState(allWorking).syncing, true)
 })
 
 test("the tooltip still leads with the paused account", () => {

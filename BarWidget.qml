@@ -19,7 +19,7 @@ BarWidget {
   // tests/Aggregate.test.js rather than spelled out here.
   readonly property var aggregate: service
     ? service.aggregate
-    : ({ kind: "checking", badge: "checking", count: 0, anyActive: false, initialized: false })
+    : ({ kind: "checking", count: 0, anyActive: false, initialized: false })
   readonly property int accountCount: service ? service.accountCount : 0
 
   // Lit/dim/spinning is decided in Model.js, not here: nothing in this file can
@@ -32,10 +32,9 @@ BarWidget {
   readonly property color iconColor: active
     ? (bar ? bar.barForeground : Color.foreground)
     : Qt.darker(bar ? bar.barForeground : Color.foreground, 1.55)
-  // The badge kind, not the worst account's kind: a deliberate pause must not
-  // put a pause glyph on a bar whose other accounts are transferring. See the
-  // note in Model.aggregateAccounts.
-  readonly property string badgeKind: Model.badgeKind(aggregate.badge)
+  // The worst account's kind, pause included: every account has to be working
+  // before the bar looks normal. See the note in Model.aggregateAccounts.
+  readonly property string badgeKind: Model.badgeKind(aggregate.kind)
   readonly property string badgeGlyph: Model.badgeGlyph(badgeKind)
   readonly property color badgeColor: badgeKind === "login" || badgeKind === "attention"
     ? (bar ? bar.urgent : Color.urgent)

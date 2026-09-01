@@ -314,10 +314,7 @@ function accountState(account) {
 function aggregateAccounts(accounts) {
   var list = Array.isArray(accounts) ? accounts : []
   if (list.length === 0) {
-    return {
-      kind: "checking", badge: "checking", rank: 0, count: 0,
-      worst: null, progress: null, anyActive: false, initialized: false
-    }
+    return { kind: "checking", rank: 0, count: 0, worst: null, anyActive: false, initialized: false }
   }
   // Accounts that have not reported yet are EXCLUDED rather than gating the
   // whole aggregate. Excluding them already prevents default property values
@@ -329,8 +326,6 @@ function aggregateAccounts(accounts) {
   var worst = null
   var worstRank = Number.MAX_VALUE
   var anyActive = false
-  var anyProgress = false
-  var progress = null
   for (var index = 0; index < list.length; index++) {
     var account = list[index]
     if (!account || account.initialized !== true) continue
@@ -355,37 +350,22 @@ function aggregateAccounts(accounts) {
     // stayed bright until a confirming poll landed. Pausing during an upload
     // looked like it had not taken.
     if (isActive || (account.syncing === true && stated !== false)) anyActive = true
-    // Tracked separately from the worst rank: the badge and the tooltip want
-    // different answers in the band below "needs attention".
-    if (state.kind === "syncing" || state.kind === "starting") {
-      anyProgress = true
-      if (progress === null) progress = account
-    }
   }
   if (!anyInitialized || worst === null) {
     return {
-      kind: "checking", badge: "checking", rank: 0, count: list.length,
-      worst: null, progress: null, anyActive: anyActive, initialized: false
+      kind: "checking", rank: 0, count: list.length,
+      worst: null, anyActive: anyActive, initialized: false
     }
   }
   var kind = accountStateKind(worst)
   return {
+    // Worst-first, INCLUDING a pause. A reviewer argued that progress should
+    // outrank a deliberate pause on the badge, and for one round it did; the
+    // user overruled it: a paused account anywhere is a state you must be shown,
+    // and every account has to be working before the bar looks normal. The
+    // badge, the tooltip and the aggregate therefore all answer with the same
+    // worst account.
     kind: kind,
-    // What the BAR shows, which is not always the worst account's state.
-    //
-    // Worst-first is the right rule for problems. A pause is not a problem, it
-    // is a choice -- `needsAttention("paused")` is already false and opening the
-    // panel will not steal the selection for one. But because "paused" outranks
-    // "syncing", pausing one account of three put a pause glyph on a bar whose
-    // other two were transferring, and stopped it spinning. That is the same
-    // class of lie as the dim that one missing account used to put on a healthy
-    // bar. So in the band below attention, progress wins; the tooltip still
-    // lists the paused account first, so the reminder is not lost.
-    badge: !needsAttention(kind) && anyProgress ? "syncing" : kind,
-    // The first account actually transferring, when there is one. The bar can
-    // show a syncing badge while the WORST account is paused, and clicking it
-    // has to reach the thing the badge is about.
-    progress: progress,
     rank: worstRank,
     count: list.length,
     worst: worst,
@@ -482,8 +462,7 @@ function aggregateTooltip(accounts, nowMs, maxLines) {
 // missing -- could be restored there with the entire suite still green.
 function barState(aggregate) {
   var summary = aggregate && typeof aggregate === "object" ? aggregate : {}
-  // The badge kind, not the worst kind: see the note in aggregateAccounts.
-  var kind = String(summary.badge || summary.kind || "")
+  var kind = String(summary.kind || "")
   // Lit while ANY account is working, so one paused account does not dim a bar
   // that is still syncing two others.
   var anyActive = summary.anyActive === true
@@ -541,13 +520,13 @@ function openSelection(summary, selectedKind) {
     if (needsAttention(selectedKind)) return ""
     return aggregate.worst ? String(aggregate.worst.service || "") : ""
   }
-  // The badge can be about progress while the WORST account is paused -- that is
-  // the pause-vs-progress rule. Clicking a spinning bar then landed on whatever
-  // was last selected, often the paused account or the cold-boot default, and
-  // the panel showed no sign of the transfer the bar was advertising.
-  if (String(aggregate.badge || "") === "syncing" && selectedKind !== "syncing"
-      && selectedKind !== "starting" && !needsAttention(selectedKind)) {
-    return aggregate.progress ? String(aggregate.progress.service || "") : ""
+  // A spinning bar is about the transfer. Under worst-first the transferring
+  // account IS the worst one, so clicking the spin reaches it rather than
+  // whatever was selected last -- but never away from an account the user is
+  // already watching sync.
+  if ((kind === "syncing" || kind === "starting") && selectedKind !== "syncing"
+      && selectedKind !== "starting") {
+    return aggregate.worst ? String(aggregate.worst.service || "") : ""
   }
   return ""
 }

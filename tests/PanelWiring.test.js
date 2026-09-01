@@ -64,13 +64,13 @@ test("the bar's state is Model's answer, unmodified", () => {
     'readonly property bool installed: barState.installed')
 })
 
-test("the badge follows the badge kind, not the worst account's kind", () => {
-  // aggregate.badge and aggregate.kind differ exactly when an account is paused
-  // while another transfers. Reading `kind` here put a pause glyph on a bar that
-  // was syncing, and stopped it spinning.
+test("the badge follows the worst account's kind, pause included", () => {
+  // Worst-first, pause included -- the user's decision: a paused account
+  // anywhere is a state the bar must show, and every account has to be working
+  // before it looks normal.
   assert.equal(
     code(barWidget, "readonly property string badgeKind:", "readonly property color badgeColor:"),
-    'readonly property string badgeKind: Model.badgeKind(aggregate.badge) ' +
+    'readonly property string badgeKind: Model.badgeKind(aggregate.kind) ' +
     'readonly property string badgeGlyph: Model.badgeGlyph(badgeKind)')
 })
 
@@ -78,7 +78,7 @@ test("the aggregate comes from the service, with a checking placeholder", () => 
   assert.equal(
     code(barWidget, "readonly property var aggregate:", "readonly property int accountCount:"),
     'readonly property var aggregate: service ? service.aggregate ' +
-    ': ({ kind: "checking", badge: "checking", count: 0, anyActive: false, initialized: false })')
+    ': ({ kind: "checking", count: 0, anyActive: false, initialized: false })')
 })
 
 test("the IPC account handlers delegate and do nothing else", () => {
