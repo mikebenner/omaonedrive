@@ -54,6 +54,7 @@ Item {
   readonly property string helperPath: Model.filePath(Qt.resolvedUrl("onedrive-status.py"))
 
   property string discoveryError: ""
+  property bool _discoverySettled: true
 
   signal openPanelRequested()
 
@@ -164,6 +165,7 @@ Item {
   function reloadAccounts() {
     if (discoveryProcess.running || helperPath === "") return
     discoveryProcess.command = Commands.listAccounts(helperPath)
+    _discoverySettled = false
     discoveryProcess.running = true
   }
 
@@ -545,12 +547,26 @@ Item {
     command: []
     stdout: StdioCollector { id: discoveryStdout; waitForEnd: true }
     stderr: StdioCollector { id: discoveryStderr; waitForEnd: true }
+    // Discovery is a Process like any other, so it too can stop without ever
+    // reporting an exit. Without this, a missing python3 left `discoveryError`
+    // empty for ever: the user saw one account and nothing at all to say the
+    // list might be wrong.
+    onRunningChanged: {
+      if (!running) Qt.callLater(function() {
+        if (root._discoverySettled) return
+        root._discoverySettled = true
+        root.discoveryError = "Could not run the OneDrive status helper"
+      })
+    }
     onExited: function(exitCode) {
+      root._discoverySettled = true
       if (exitCode !== 0) {
-        // Non-destructive: keep whatever accounts we already have, and seed the
-        // compatibility fallback if this was the first attempt.
+        // Non-destructive: keep whatever accounts we already have. The startup
+        // seed and applyDiscovery's own floor both guarantee there is at least
+        // one, so there is nothing to re-seed here -- an earlier version tried,
+        // in a branch that could never be reached.
         root.discoveryError = String(discoveryStderr.text || "").trim()
-        if (descriptors.count === 0) root.applyDiscovery([root.defaultDescriptor()])
+          || "Could not list OneDrive accounts"
         return
       }
       var rows = null
@@ -566,7 +582,6 @@ Item {
         // than a non-zero exit, which is handled above -- and it would repeat on
         // every discovery tick.
         root.discoveryError = "Could not read the account list"
-        if (descriptors.count === 0) root.applyDiscovery([root.defaultDescriptor()])
         return
       }
       root.discoveryError = ""

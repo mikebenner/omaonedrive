@@ -1973,7 +1973,71 @@ Item {
         harness.drain(harness.statusPayload({ confdir: "/c/a" }))
       }
 
-      else if (s >= 179) {
+
+      // ---------------------------------------------------------------------
+      // Discovery failing. A non-zero exit, unreadable output and a helper that
+      // cannot be started must all be non-destructive AND say so: the user keeps
+      // the accounts they had, and learns the list may be stale. Without the
+      // last of those, a missing python3 showed one account and no explanation.
+      else if (s === 179) {
+        console.log("discovery that fails is non-destructive, and says so")
+        svc.applyDiscovery([
+          { service: "onedrive@a.service", instance: "a", confdir: "/c/a", description: "A" },
+          { service: "onedrive@b.service", instance: "b", confdir: "/c/b", description: "B" }
+        ])
+        harness.drain(harness.statusPayload({}))
+        svc.reloadAccounts()
+        var disc = Quickshell.runningWith("--list-accounts")
+        harness.check(disc.length === 1, "a discovery is running")
+        disc[0].finish(1, "")
+      }
+
+      else if (s === 180) {
+        harness.check(svc.accountCount === 2,
+          "a discovery that exits non-zero keeps the accounts we had")
+        harness.check(svc.discoveryError !== "",
+          "...and says the list may be stale: " + svc.discoveryError)
+        svc.reloadAccounts()
+        var disc2 = Quickshell.runningWith("--list-accounts")
+        harness.check(disc2.length === 1, "another discovery is running")
+        disc2[0].finish(0, "this is not json")
+      }
+
+      else if (s === 181) {
+        harness.check(svc.accountCount === 2,
+          "unreadable output is 'could not look', not 'found nothing'")
+        harness.check(svc.discoveryError.indexOf("read") !== -1,
+          "...and says so: " + svc.discoveryError)
+        svc.reloadAccounts()
+        var disc3 = Quickshell.runningWith("--list-accounts")
+        harness.check(disc3.length === 1, "a third discovery is running")
+        harness.check(disc3[0].failToStart(),
+          "...and its executable cannot be started")
+      }
+
+      else if (s === 182) {
+        harness.check(svc.accountCount === 2, "the accounts survive that too")
+        // The SPECIFIC message: `discoveryError` was still set from the previous
+        // step, so asserting only that it is non-empty passed whether or not the
+        // failure-to-start path ran at all.
+        harness.check(svc.discoveryError === "Could not run the OneDrive status helper",
+          "...and a helper that never ran still reports why: " + svc.discoveryError)
+        harness.check(svc.lastError !== "",
+          "...which reaches the panel through the facade")
+      }
+
+      else if (s === 183) {
+        // ...and a discovery that works clears it.
+        svc.reloadAccounts()
+        var disc4 = Quickshell.runningWith("--list-accounts")
+        disc4[0].finish(0, harness.discoveryPayload(["a", "b"]))
+        harness.check(svc.discoveryError === "",
+          "a discovery that works clears the warning")
+        harness.check(svc.accountCount === 2, "...and the accounts are still there")
+        harness.drain(harness.statusPayload({}))
+      }
+
+      else if (s >= 184) {
         // The count is printed so tests/run can tell "every check passed" from
         // "no check ran": a qml that exits 0 without executing the harness, or a
         // step loop that stops early, both used to read as success.
