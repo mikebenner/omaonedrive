@@ -377,7 +377,14 @@ Item {
     // account's name -- which is what the startup seed poll did whenever a unit
     // overrode the client's default directory.
     var reported = String(parsed.confdir || "")
-    if (reported !== "" && confdir !== "" && reported !== confdir) return
+    if (reported !== "" && confdir !== "" && reported !== confdir) {
+      // Say so. A silent return leaves the account permanently on "Checking…"
+      // with nothing to explain it, and if the two directories ever disagree for
+      // a reason other than the startup race -- a normalisation difference, say
+      // -- that is a bug that must be visible rather than a mystery.
+      lastError = "OneDrive status came from " + reported + ", not " + confdir
+      return
+    }
     var wasFailed = serviceFailed
     var wasResync = resyncRequired
     var wasReauth = reauthRequired

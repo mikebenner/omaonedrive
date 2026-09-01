@@ -746,6 +746,48 @@ jq -e --arg confdir "$test_home/.config/onedrive" '.confdir == $confdir' \
 }
 python3 "$root/onedrive-status.py" --limit 5 >"$test_root/stamp.json"
 
+# THE invariant behind the stamp: the directory discovery reports for an account
+# and the directory a poll of that account reports must be byte-identical. If
+# they ever diverge -- an un-normalised default, a trailing slash -- the widget
+# refuses every reply and that account shows nothing, for ever, with no error to
+# explain it. Check it for the plain service, whose confdir comes from
+# default_confdir() on one path and canonical_confdir() on the other.
+FAKE_UNITS='onedrive.service loaded active running OneDrive Client for Linux' \
+  python3 "$root/onedrive-status.py" --list-accounts >"$test_root/stamp-accounts.json"
+discovered=$(jq -r '.[0].confdir' "$test_root/stamp-accounts.json")
+polled=$(python3 "$root/onedrive-status.py" \
+  --confdir "$discovered" --limit 5 | jq -r '.confdir')
+if [[ "$discovered" != "$polled" ]]; then
+  echo "discovery and polling disagree about the same account's confdir" >&2
+  echo "  discovery: $discovered" >&2
+  echo "  poll:      $polled" >&2
+  exit 1
+fi
+# ...and it holds when XDG_CONFIG_HOME is not already normalised, which is where
+# the two paths used to diverge.
+# pathlib silently drops "." segments but keeps "..", so ".." is the form that
+# actually reaches normpath and diverges.
+odd_home="$test_home/.config/../.config"
+XDG_CONFIG_HOME="$odd_home" FAKE_UNITS='onedrive.service loaded active running OneDrive Client for Linux' \
+  python3 "$root/onedrive-status.py" --list-accounts >"$test_root/odd-accounts.json"
+# Polled the way the WIDGET polls it: with the confdir discovery just reported.
+# That is the path that normalises, so this is where the two used to diverge.
+XDG_CONFIG_HOME="$odd_home" python3 "$root/onedrive-status.py" \
+  --confdir "$(jq -r '.[0].confdir' "$test_root/odd-accounts.json")" --limit 5 \
+  >"$test_root/odd-stamp.json"
+odd_discovered=$(jq -r '.[0].confdir' "$test_root/odd-accounts.json")
+odd_polled=$(jq -r '.confdir' "$test_root/odd-stamp.json")
+if [[ "$odd_discovered" != "$odd_polled" ]]; then
+  echo "an unnormalised XDG_CONFIG_HOME made discovery and polling disagree" >&2
+  echo "  discovery: $odd_discovered" >&2
+  echo "  poll:      $odd_polled" >&2
+  exit 1
+fi
+if [[ "$odd_discovered" == *"/../"* ]]; then
+  echo "the reported confdir was not normalised: $odd_discovered" >&2
+  exit 1
+fi
+
 # A cache file that is valid JSON but has a string where a number belongs used to
 # raise ValueError before the code that would have repaired or replaced it. One
 # bad byte -- an editor, a truncated write, a botched migration -- and that

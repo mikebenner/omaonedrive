@@ -1668,7 +1668,43 @@ Item {
         harness.drain(harness.statusPayload({}))
       }
 
-      else if (s >= 146) {
+
+      // A refusal must be VISIBLE. Silently ignoring a mismatched reply leaves
+      // the account on "Checking…" for ever with nothing to explain it -- and if
+      // the two directories ever disagree for a reason other than the startup
+      // race, that is a bug someone has to be able to see.
+      else if (s === 146) {
+        console.log("a refused reply says why it was refused")
+        svc.applyDiscovery([
+          { service: "onedrive@a.service", instance: "a", confdir: "/c/a", description: "A" }
+        ])
+        harness.drain(harness.statusPayload({ confdir: "/c/a" }))
+      }
+
+      else if (s === 147) {
+        svc.accounts[0].forgetSample()
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({
+          confdir: "/somewhere/else", syncDir: "/d/other" }))
+        harness.check(svc.accounts[0].initialized === false, "the reply is refused")
+        harness.check(svc.accounts[0].lastError.indexOf("/somewhere/else") !== -1,
+          "...and names the directory it came from: " + svc.accounts[0].lastError)
+        harness.check(svc.accounts[0].lastError.indexOf("/c/a") !== -1,
+          "...and the one it should have come from")
+      }
+
+      else if (s === 148) {
+        // A reply carrying no stamp at all -- an older helper -- is still
+        // applied, or an upgrade in the wrong order bricks every account.
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({
+          confdir: "", syncDir: "/d/unstamped" }))
+        harness.check(svc.accounts[0].syncDir === "/d/unstamped",
+          "an unstamped reply is still applied")
+        harness.check(svc.accounts[0].initialized === true, "...and reports")
+      }
+
+      else if (s >= 149) {
         // The count is printed so tests/run can tell "every check passed" from
         // "no check ran": a qml that exits 0 without executing the harness, or a
         // step loop that stops early, both used to read as success.

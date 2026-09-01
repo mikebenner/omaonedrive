@@ -44,18 +44,23 @@ def command_output(command, timeout=4):
   return completed.returncode, (completed.stdout + completed.stderr).strip()
 
 
-def default_confdir():
-  config_home = os.environ.get("XDG_CONFIG_HOME")
-  if config_home:
-    return Path(config_home) / "onedrive"
-  return Path.home() / ".config" / "onedrive"
-
-
 def canonical_confdir(value):
   # Collapses "." and ".." segments and any trailing slash so one account cannot
   # key two different caches. Deliberately not realpath(): resolving symlinks
   # would silently move an account whose config directory is a link.
   return Path(os.path.normpath(str(value)))
+
+
+def default_confdir():
+  # Canonical, like every other confdir we report. The widget compares the
+  # directory a reply says it read against the one discovery gave it, and refuses
+  # a mismatch -- so if discovery reported "/home/u/./config/onedrive" and a poll
+  # reported the normalised form, that account would be refused on every poll for
+  # ever, showing nothing and saying nothing.
+  config_home = os.environ.get("XDG_CONFIG_HOME")
+  if config_home:
+    return canonical_confdir(Path(config_home) / "onedrive")
+  return canonical_confdir(Path.home() / ".config" / "onedrive")
 
 
 def valid_confdir(value):
@@ -950,7 +955,7 @@ def build_status(args):
     # answering with the default account's data would be a lie about identity.
     confdir = canonical_confdir(entry["confdir"]) if entry else None
   else:
-    confdir = default_confdir()
+    confdir = canonical_confdir(default_confdir())
   config = client_config(confdir, onedrive_path) if confdir else {
     "syncDir": None,
     "syncMode": "Two-way",

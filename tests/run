@@ -17,7 +17,7 @@ node --test "$root/tests/Model.test.js" "$root/tests/IpcLifecycle.test.js" \
 # A floor, not an exact count: adding checks must not need a bookkeeping edit,
 # but silently losing most of them must fail. Raise it when coverage grows
 # substantially.
-qml_min_checks=210
+qml_min_checks=220
 qml_runner=$(command -v qml6 || echo /usr/lib/qt6/bin/qml)
 if [ -x "$qml_runner" ]; then
   # Capture qml's own status BEFORE any pipeline. Filtering through
