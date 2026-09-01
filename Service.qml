@@ -132,6 +132,9 @@ Item {
     }
 
     if (descriptors.count === 0) descriptors.append(defaultDescriptor())
+    // Reconciliation may have removed the account holding the cloud slot, or the
+    // one a queued entry belongs to. Re-check once the model has settled.
+    Qt.callLater(function() { root.cloudFinished() })
     // A removed selected account falls back to the first discovered one.
     if (accountForService(selectedService) === null) {
       selectedService = descriptors.count > 0 ? descriptors.get(0).service : ""
@@ -251,9 +254,26 @@ Item {
     account.startCloudCheck(mode)
   }
 
+  function hasDescriptor(service) {
+    for (var row = 0; row < descriptors.count; row++) {
+      if (descriptors.get(row).service === service) return true
+    }
+    return false
+  }
+
   function cloudBusyAccount() {
     for (var index = 0; index < _accountObjects.length; index++) {
       var account = _accountObjects[index]
+      // A delegate discovery has already dropped will never report again, so it
+      // must not hold the shared slot: nothing releases a slot held by an
+      // account that no longer exists, and every queued account then sat there
+      // showing "Not checked".
+      //
+      // The retry at the end of applyDiscovery is what the harness actually
+      // pins -- there the delegate is already destroyed by the time it runs.
+      // This guard covers the case where destruction is deferred past that
+      // point, which the harness cannot produce and which real Quickshell can.
+      if (!hasDescriptor(account.service)) continue
       // Pending counts as busy: a check deferred behind that account's routine
       // poll has already claimed the slot.
       if (account.cloudChecking || account.cloudPending) return account

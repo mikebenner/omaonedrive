@@ -1041,6 +1041,12 @@ def build_status(args):
     "syncStage": journal["syncStage"] if service["running"] else "",
     "statusText": status_text(onedrive_path is not None, authenticated, service, journal, resume_at),
     "resumeAt": resume_at,
+    # The identity stamp. The widget cannot otherwise tell whether a reply
+    # describes the account it now believes this unit to be: the startup poll
+    # runs before discovery has read the unit's ExecStart, so it uses the
+    # client's default directory, and if the unit overrides it that reply belongs
+    # to a different account entirely.
+    "confdir": str(confdir) if confdir else "",
     "syncDir": str(sync_dir) if sync_dir else "",
     "syncMode": config["syncMode"],
     "clientVersion": config["clientVersion"],

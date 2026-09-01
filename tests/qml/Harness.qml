@@ -52,7 +52,7 @@ Item {
       usedBytes: 0, quotaBytes: 0, quotaKnown: false, quotaCheckedTs: 0,
       quotaError: "", remoteStatus: "Not checked", syncStatusCheckedTs: 0,
       syncStatusError: "", remoteCheckedTs: 0, remoteError: "", files: [],
-      activity: [], lastError: ""
+      activity: [], lastError: "", confdir: ""
     }
     for (var key in overrides) base[key] = overrides[key]
     return JSON.stringify(base)
@@ -1402,7 +1402,273 @@ Item {
         harness.drain("")
       }
 
-      else if (s >= 124) {
+
+      // ---------------------------------------------------------------------
+      // A deferred settle callback outlives the process that scheduled it. With
+      // a shared boolean, finishing one poll and starting another in the same
+      // turn let the FIRST poll's callback abandon the SECOND: refreshing
+      // cleared, watchdog stopped, an error posted, and the live reply ignored.
+      else if (s === 124) {
+        console.log("a settled process must not settle its successor")
+        svc.applyDiscovery([
+          { service: "onedrive@a.service", instance: "a", confdir: "/c/a", description: "A" },
+          { service: "onedrive@b.service", instance: "b", confdir: "/c/b", description: "B" }
+        ])
+        harness.drain(harness.statusPayload({}))
+      }
+
+      else if (s === 125) {
+        harness.drain(harness.statusPayload({}))
+        svc.accounts[0].refresh(false)
+        harness.check(harness.statusProcessFor("onedrive@a.service") !== null,
+          "a poll is running")
+        // Completing it schedules the deferred failure check for THIS run...
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({ syncDir: "/d/a" }))
+        // ...and a second poll starts before that callback gets to run.
+        svc.accounts[0].refresh(false)
+        harness.check(harness.statusProcessFor("onedrive@a.service") !== null,
+          "...and a second one starts in the same turn")
+      }
+
+      else if (s === 126) {
+        harness.check(svc.accounts[0].refreshing === true,
+          "the second poll is still running, not abandoned by the first's callback")
+        harness.check(svc.accounts[0].lastError === "",
+          "...and no failure was invented for it: " + svc.accounts[0].lastError)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({ syncDir: "/d/a2" }))
+        harness.check(svc.accounts[0].syncDir === "/d/a2",
+          "...so its reply is applied rather than ignored")
+      }
+
+      // ---------------------------------------------------------------------
+      // A poll STARTED before a control can complete after it. Counting
+      // completed samples accepted such a poll as the confirmation, so a sample
+      // taken before the stop -- still reporting the account as running -- undid
+      // the pause. The confirmation has to have been started after the control.
+      else if (s === 127) {
+        console.log("a poll started before the control does not confirm it")
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@b.service", false)
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/b", running: true, activeState: "active" }))
+        harness.check(svc.selectedAccount.active === true, "B is running")
+        svc.pause()
+        harness.check(harness.liveWith("omaonedrive-resume@b").length === 1,
+          "the resume-timer cancel is in flight")
+        // The scheduler can hand B a slot here: a control is running, but B's
+        // STATUS process is idle, which is all the poll gate looks at.
+        svc.accounts[1].refresh(false)
+        harness.check(harness.statusProcessFor("onedrive@b.service") !== null,
+          "...and a poll starts while it is")
+      }
+
+      else if (s === 128) {
+        // Let the cancel and then the stop complete, leaving the pre-stop poll
+        // still in flight.
+        var live = Quickshell.running()
+        for (var i = 0; i < live.length; i++) {
+          if ((live[i].command || []).join(" ").indexOf("onedrive-status.py") === -1) {
+            live[i].finish(0, "")
+          }
+        }
+      }
+
+      else if (s === 129) {
+        var live2 = Quickshell.running()
+        for (var j = 0; j < live2.length; j++) {
+          if ((live2[j].command || []).join(" ").indexOf("onedrive-status.py") === -1) {
+            live2[j].finish(0, "")
+          }
+        }
+        harness.check(harness.statusProcessFor("onedrive@b.service") !== null,
+          "the pre-stop poll is still in flight when the stop completes")
+      }
+
+      else if (s === 130) {
+        // ...and now it comes back, reporting what was true BEFORE the stop.
+        harness.finishStatus("onedrive@b.service", harness.statusPayload({
+          syncDir: "/d/b", running: true, activeState: "active" }))
+        harness.check(svc.accounts[1].active === false,
+          "a sample taken before the stop does not undo the pause")
+        harness.check(svc.accounts[1].settling === true,
+          "...and the account is still waiting for a real confirmation")
+      }
+
+      else if (s === 131) {
+        // A poll started AFTER the stop is believed, in both directions.
+        svc.accounts[1].refresh(false)
+        harness.finishStatus("onedrive@b.service", harness.statusPayload({
+          syncDir: "/d/b", running: false, activeState: "inactive" }))
+        harness.check(svc.accounts[1].active === false, "a confirming poll leaves it paused")
+        harness.check(svc.accounts[1].settling === false, "...and ends the wait")
+      }
+
+      // ---------------------------------------------------------------------
+      // The other three failure-to-start paths. All three could be deleted
+      // together with the whole suite green: only the status one was driven.
+      else if (s === 132) {
+        console.log("every control that cannot start is handled, not just the poll")
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@b.service", false)
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/b", running: true, activeState: "active" }))
+        svc.pause()
+        var cancel = harness.liveWith("omaonedrive-resume@b")
+        harness.check(cancel.length === 1, "the resume-timer cancel is in flight")
+        // systemctl is not on PATH, or the fork fails.
+        var procs = Quickshell.running()
+        for (var c = 0; c < procs.length; c++) {
+          if ((procs[c].command || []).join(" ").indexOf("omaonedrive-resume@b") !== -1) {
+            procs[c].failToStart()
+          }
+        }
+      }
+
+      else if (s === 133) {
+        harness.check(harness.liveWith("systemctl --user stop onedrive@b.service").length === 1,
+          "a cancel that cannot start still lets the pause through")
+        // ...and now the stop itself cannot start.
+        var stops = Quickshell.running()
+        for (var d = 0; d < stops.length; d++) {
+          if ((stops[d].command || []).join(" ").indexOf("stop onedrive@b.service") !== -1) {
+            stops[d].failToStart()
+          }
+        }
+      }
+
+      else if (s === 134) {
+        harness.check(svc.accounts[1].active === true,
+          "a control that cannot start does not leave the bar claiming a pause that never happened")
+        harness.check(svc.accounts[1].lastError !== "",
+          "...and says the command failed: " + svc.accounts[1].lastError)
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/b", running: true, activeState: "active" }))
+      }
+
+      else if (s === 135) {
+        svc.pauseFor(45)
+        harness.drain("")
+      }
+
+      else if (s === 136) { harness.drain("") }
+
+      else if (s === 137) {
+        var run = harness.liveWith("systemd-run")
+        harness.check(run.length === 1, "the resume timer is attempted")
+        var timers = Quickshell.running()
+        for (var t = 0; t < timers.length; t++) {
+          if ((timers[t].command || []).indexOf("systemd-run") !== -1) timers[t].failToStart()
+        }
+      }
+
+      else if (s === 138) {
+        harness.check(harness.liveWith("systemctl --user start onedrive@b.service").length === 1,
+          "a systemd-run that cannot START recovers the account, like one that fails")
+        harness.drain("")
+      }
+
+
+      // ---------------------------------------------------------------------
+      // The seed sample that had ALREADY been applied. Discarding the in-flight
+      // reply was only half of it: at startup discovery and the first poll are
+      // launched together, and the poll -- one helper call against the client's
+      // default directory -- usually wins the race against a `list-units` plus a
+      // `systemctl show` per unit. So the wrong sample is on screen by the time
+      // the confdir arrives, and the old guard explicitly refused to clear it.
+      else if (s === 139) {
+        console.log("a seed sample already on screen when discovery lands")
+        svc.applyDiscovery([
+          { service: "onedrive.service", instance: "", confdir: "", description: "" }
+        ])
+        harness.drain(harness.statusPayload({}))
+        svc.accounts[0].forgetSample()
+        svc.accounts[0].refresh(false)
+        // The helper stamps every reply with the directory it actually read.
+        harness.finishStatus("onedrive.service", harness.statusPayload({
+          confdir: "/home/u/.config/onedrive",
+          syncDir: "/DEFAULT/tree", statusText: "Monitoring the default account" }))
+        harness.check(svc.accounts[0].initialized === true,
+          "the seed poll reports, and is shown -- there is nothing yet to say it is wrong")
+        harness.check(svc.accounts[0].syncDir === "/DEFAULT/tree", "...with its sync directory")
+      }
+
+      else if (s === 140) {
+        // Discovery now reads this unit's ExecStart and finds it overrides the
+        // client default. Everything on screen belongs to another account.
+        svc.applyDiscovery([
+          { service: "onedrive.service", instance: "",
+            confdir: "/CUSTOM/onedrive", description: "" }
+        ])
+        harness.check(svc.accounts[0].confdir === "/CUSTOM/onedrive", "the unit is repointed")
+        harness.check(svc.accounts[0].syncDir !== "/DEFAULT/tree",
+          "the default account's sync directory is dropped, not left for Open folder")
+        harness.check(svc.accounts[0].initialized === false,
+          "...and the account is back to having reported nothing")
+        harness.check(svc.accounts[0].statusText.indexOf("default account") === -1,
+          "...including its status line")
+      }
+
+      else if (s === 141) {
+        // ...and the reply for the RIGHT directory is applied normally, so the
+        // stamp cannot simply be refusing everything.
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive.service", harness.statusPayload({
+          confdir: "/CUSTOM/onedrive", syncDir: "/CUSTOM/tree" }))
+        harness.check(svc.accounts[0].syncDir === "/CUSTOM/tree",
+          "a reply stamped with the account's own directory is applied")
+        harness.check(svc.accounts[0].initialized === true, "...and it reports")
+      }
+
+      else if (s === 142) {
+        // A reply stamped with someone else's directory is refused outright,
+        // whatever the generation says -- the in-flight case and this one are the
+        // same rule now.
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive.service", harness.statusPayload({
+          confdir: "/SOMEONE/else", syncDir: "/SOMEONE/tree", statusText: "Not ours" }))
+        harness.check(svc.accounts[0].syncDir === "/CUSTOM/tree",
+          "a reply from another config directory is refused")
+        harness.check(svc.accounts[0].statusText.indexOf("Not ours") === -1,
+          "...and leaves nothing of itself behind")
+      }
+
+
+      // The queue was drained past an account removed while QUEUED, but not past
+      // the one actually holding the slot: its destruction unregisters its
+      // process without ever emitting pollFinished.
+      else if (s === 143) {
+        console.log("removing the account holding the cloud slot frees it")
+        svc.applyDiscovery([
+          { service: "onedrive@a.service", instance: "a", confdir: "/c/a", description: "A" },
+          { service: "onedrive@b.service", instance: "b", confdir: "/c/b", description: "B" }
+        ])
+        harness.drain(harness.statusPayload({}))
+      }
+
+      else if (s === 144) {
+        harness.drain(harness.statusPayload({}))
+        svc.accounts[0].checkQuota()
+        svc.accounts[1].checkQuota()
+        harness.check(harness.liveWith("--quota").length === 1,
+          "A holds the cloud slot and B is queued behind it")
+        harness.check(harness.liveWith("/c/a").length === 1, "...and it is A")
+        // A's unit disappears mid-check.
+        svc.applyDiscovery([
+          { service: "onedrive@b.service", instance: "b", confdir: "/c/b", description: "B" }
+        ])
+        harness.check(svc.accountCount === 1, "A is gone")
+      }
+
+      else if (s === 145) {
+        var freed = harness.liveWith("--quota")
+        harness.check(freed.length === 1,
+          "B's queued check starts rather than waiting for an unrelated poll")
+        harness.check(freed.length === 1 && freed[0].indexOf("/c/b") !== -1,
+          "...and it is B's, with B's own config directory")
+        harness.drain(harness.statusPayload({}))
+      }
+
+      else if (s >= 146) {
         // The count is printed so tests/run can tell "every check passed" from
         // "no check ran": a qml that exits 0 without executing the harness, or a
         // step loop that stops early, both used to read as success.

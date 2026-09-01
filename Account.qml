@@ -23,6 +23,16 @@ Item {
   // the next poll slot: without that the answer could be swallowed indefinitely
   // by a neighbour's polling, and the bar would keep showing pre-control state.
   readonly property bool settling: settleTimer.waiting
+  // The config directory the displayed sample actually came from, as the helper
+  // reported it -- not the one we believe this unit uses.
+  property string sampleConfdir: ""
+
+  // Discovery can tell us this unit's real directory AFTER a poll has already
+  // reported under a different one. That sample is another account's; nothing in
+  // it may stay on screen.
+  onConfdirChanged: {
+    if (sampleConfdir !== "" && confdir !== "" && sampleConfdir !== confdir) forgetSample()
+  }
   readonly property string resumeUnit: Commands.resumeUnit(instance)
   // True once a status poll has produced a usable sample. Until then this
   // account contributes no state to the aggregate, so default values cannot
@@ -61,13 +71,29 @@ Item {
   // `refreshing`, so a single unstartable command froze routine polling for
   // EVERY account for the life of the session. Each process therefore settles on
   // whichever signal arrives first, and settles exactly once.
-  property bool _statusSettled: true
-  property bool _controlSettled: true
-  property bool _cancelSettled: true
-  property bool _scheduleSettled: true
-  // Counts samples actually APPLIED, so the settle timer can tell "the poll came
-  // back and disagreed" from "no poll ever ran".
-  property int _samples: 0
+  // Per-INVOCATION, not a shared boolean. A deferred settle callback outlives
+  // the process that scheduled it: start a quota check, queue a sync-status for
+  // the same account, let the quota finish normally, and the quota's deferred
+  // callback then found `_statusSettled` false again -- because the sync-status
+  // had started -- and abandoned a process that was running perfectly well.
+  // Each start takes a new token; a callback acts only on its own.
+  property int _statusRun: 0
+  property int _statusSettledRun: 0
+  property int _controlRun: 0
+  property int _controlSettledRun: 0
+  property int _cancelRun: 0
+  property int _cancelSettledRun: 0
+  property int _scheduleRun: 0
+  property int _scheduleSettledRun: 0
+  readonly property bool _statusSettled: _statusSettledRun === _statusRun
+  // Polls are numbered as they START, and the number of the poll whose sample was
+  // last APPLIED is kept. Counting completions was not enough: a poll started
+  // BEFORE the control could complete after it and be accepted as the
+  // confirmation, which undid the optimistic pause with pre-control data --
+  // exactly the revert the settle loop exists to prevent.
+  property int _pollsStarted: 0
+  property int _pendingPoll: 0
+  property int _confirmedPoll: 0
   readonly property bool active: _desired === -1
     ? (running || activeState === "activating") : _desired === 1
   property bool refreshing: false
@@ -174,6 +200,7 @@ Item {
     // Any reply already in flight was started under the previous config
     // directory; this makes onExited drop it.
     generation += 1
+    sampleConfdir = ""
     initialized = false
     // A new identity has not been polled yet, whatever the old one had done.
     attempted = false
@@ -299,7 +326,9 @@ Item {
     _statusOutput = ""
     _statusError = ""
     _pendingGeneration = generation
-    _statusSettled = false
+    _pollsStarted += 1
+    _pendingPoll = _pollsStarted
+    _statusRun += 1
     statusWatchdog.restart()
     refreshing = true
     if (cloudMode !== "") {
@@ -342,6 +371,13 @@ Item {
       lastError = parsed.lastError || "Failed to read OneDrive status"
       return
     }
+    // The helper reports which config directory it actually read. A reply from a
+    // different one describes a different account, and applying it would put
+    // that account's sync directory, quota, token state and file list under this
+    // account's name -- which is what the startup seed poll did whenever a unit
+    // overrode the client's default directory.
+    var reported = String(parsed.confdir || "")
+    if (reported !== "" && confdir !== "" && reported !== confdir) return
     var wasFailed = serviceFailed
     var wasResync = resyncRequired
     var wasReauth = reauthRequired
@@ -358,7 +394,8 @@ Item {
     reauthRequired = parsed.reauthRequired === true
     syncing = parsed.syncing === true
     syncStage = String(parsed.syncStage || "")
-    _samples += 1
+    _confirmedPoll = _pendingPoll
+    sampleConfdir = reported
     if (_desired !== -1 && running === (_desired === 1)) _desired = -1
     statusText = String(parsed.statusText || (installed ? "Sync paused" : "Not installed"))
     syncDir = String(parsed.syncDir || "")
@@ -410,9 +447,11 @@ Item {
   // started, or the watchdog gave up on it. Everything onExited would have
   // released has to be released here too, or the account keeps the coordinator's
   // poll slot and no other account is ever polled again.
-  function abandonStatus(reason) {
-    if (_statusSettled) return
-    _statusSettled = true
+  function abandonStatus(run, reason) {
+    // Not this invocation any more: the process was restarted before this
+    // deferred callback ran, and settling now would abandon a live poll.
+    if (run !== _statusRun || _statusSettledRun === run) return
+    _statusSettledRun = run
     statusWatchdog.stop()
     refreshing = false
     if (_pendingGeneration === generation) {
@@ -503,7 +542,7 @@ Item {
     _controlOutput = ""
     _controlError = ""
     controlProcess.command = command
-    _controlSettled = false
+    _controlRun += 1
     controlProcess.running = true
   }
 
@@ -519,13 +558,13 @@ Item {
     _timerOutput = ""
     _timerError = ""
     cancelTimerProcess.command = Commands.cancelResume(resumeUnit)
-    _cancelSettled = false
+    _cancelRun += 1
     cancelTimerProcess.running = true
   }
 
-  function settleResumeTimerCancel() {
-    if (_cancelSettled) return
-    _cancelSettled = true
+  function settleResumeTimerCancel(run) {
+    if (run !== _cancelRun || _cancelSettledRun === run) return
+    _cancelSettledRun = run
     afterResumeTimerCancelled()
   }
 
@@ -554,7 +593,7 @@ Item {
     _timerOutput = ""
     _timerError = ""
     scheduleTimerProcess.command = Commands.scheduleResume(resumeUnit, service, minutes)
-    _scheduleSettled = false
+    _scheduleRun += 1
     scheduleTimerProcess.running = true
   }
 
@@ -603,13 +642,13 @@ Item {
     // Whether this account is waiting to be told what a control actually did.
     // The coordinator gives it the next poll slot, so the answer arrives in one
     // round rather than never.
-    readonly property bool waiting: running && root._samples === baseline
+    readonly property bool waiting: running && root._confirmedPoll <= baseline
     interval: root.settleIntervalMs
     repeat: true
     onTriggered: {
       ticks += 1
       root.requestRefresh()
-      if (root._samples !== baseline) {
+      if (root._confirmedPoll > baseline) {
         // A poll taken after the control has landed and applyStatus has had its
         // say. Anything still optimistic now is a genuine divergence.
         ticks = 0
@@ -636,8 +675,9 @@ Item {
       if (root._statusSettled) return
       // Assigning false terminates it in real Quickshell; the exit that follows
       // finds the process already settled and is ignored.
+      var run = root._statusRun
       statusProcess.running = false
-      root.abandonStatus("OneDrive status check timed out")
+      root.abandonStatus(run, "OneDrive status check timed out")
     }
   }
 
@@ -666,13 +706,16 @@ Item {
       // Ordering between `exited` and `running` is not ours to rely on, so defer:
       // by the time this runs, a real exit has already settled the process and
       // this is a no-op. Only a failure to start reaches abandonStatus.
-      if (!running) Qt.callLater(function() {
-        root.abandonStatus("Could not run the OneDrive status helper")
-      })
+      if (!running) {
+        var run = root._statusRun
+        Qt.callLater(function() {
+          root.abandonStatus(run, "Could not run the OneDrive status helper")
+        })
+      }
     }
     onExited: function(exitCode) {
-      if (root._statusSettled) return
-      root._statusSettled = true
+      if (root._statusSettledRun === root._statusRun) return
+      root._statusSettledRun = root._statusRun
       statusWatchdog.stop()
       var cloudMode = root._activeCloudMode
       root.refreshing = false
@@ -728,13 +771,18 @@ Item {
     stderr: StdioCollector { waitForEnd: true }
     // A cancel that cannot even start must still let the action it precedes
     // through, or pause and resume simply do nothing from then on.
-    onRunningChanged: { if (!running) Qt.callLater(root.settleResumeTimerCancel) }
-    onExited: function(exitCode) { root.settleResumeTimerCancel() }
+    onRunningChanged: {
+      if (!running) {
+        var run = root._cancelRun
+        Qt.callLater(function() { root.settleResumeTimerCancel(run) })
+      }
+    }
+    onExited: function(exitCode) { root.settleResumeTimerCancel(root._cancelRun) }
   }
 
-  function settleResumeSchedule(exitCode) {
-    if (_scheduleSettled) return
-    _scheduleSettled = true
+  function settleResumeSchedule(run, exitCode) {
+    if (run !== _scheduleRun || _scheduleSettledRun === run) return
+    _scheduleSettledRun = run
     var stdout = String(timerStdout.text || _timerOutput || "")
     var stderr = String(timerStderr.text || _timerError || "")
     if (exitCode !== 0) {
@@ -769,14 +817,17 @@ Item {
     // failing: the account is already stopped and nothing will resume it. Take
     // the recovery path rather than leaving it paused indefinitely.
     onRunningChanged: {
-      if (!running) Qt.callLater(function() { root.settleResumeSchedule(127) })
+      if (!running) {
+        var run = root._scheduleRun
+        Qt.callLater(function() { root.settleResumeSchedule(run, 127) })
+      }
     }
-    onExited: function(exitCode) { root.settleResumeSchedule(exitCode) }
+    onExited: function(exitCode) { root.settleResumeSchedule(root._scheduleRun, exitCode) }
   }
 
-  function settleControl(exitCode) {
-    if (_controlSettled) return
-    _controlSettled = true
+  function settleControl(run, exitCode) {
+    if (run !== _controlRun || _controlSettledRun === run) return
+    _controlSettledRun = run
     var desired = root._controlDesired
     root._controlDesired = -1
     var stdout = String(controlStdout.text || root._controlOutput || "")
@@ -789,7 +840,9 @@ Item {
     } else {
       root.lastError = ""
       settleTimer.ticks = 0
-      settleTimer.baseline = root._samples
+      // Every poll started from here on outranks this number; one started
+      // before the control does not, however late it comes back.
+      settleTimer.baseline = root._pollsStarted
       settleTimer.start()
       if (desired === 0 && root._pauseMinutes > 0) {
         var minutes = root._pauseMinutes
@@ -822,8 +875,11 @@ Item {
     // optimistic state has to be dropped -- otherwise the bar claims a pause
     // that never happened.
     onRunningChanged: {
-      if (!running) Qt.callLater(function() { root.settleControl(127) })
+      if (!running) {
+        var run = root._controlRun
+        Qt.callLater(function() { root.settleControl(run, 127) })
+      }
     }
-    onExited: function(exitCode) { root.settleControl(exitCode) }
+    onExited: function(exitCode) { root.settleControl(root._controlRun, exitCode) }
   }
 }

@@ -688,6 +688,24 @@ done
 python3 "$root/onedrive-status.py" --confdir "$test_home/.config/../.config/onedrive" --limit 5 \
   >"$test_root/dotdot.json"
 jq -e --arg sync_dir "$sync_dir" '.syncDir == $sync_dir' "$test_root/dotdot.json" >/dev/null
+# Every reply names the config directory it actually READ, canonicalised. The
+# widget's startup poll runs before discovery has read the unit's ExecStart, so
+# it uses the client's default; without this stamp the widget cannot tell that
+# reply apart from one describing the account it later learns this unit is, and
+# it showed the default account's sync directory, quota and token state under
+# the other account's name.
+jq -e --arg confdir "$test_home/.config/onedrive" '.confdir == $confdir' \
+  "$test_root/dotdot.json" >/dev/null || {
+  echo "the reply did not report the canonical confdir it read" >&2
+  jq -r '.confdir' "$test_root/dotdot.json" >&2
+  exit 1
+}
+python3 "$root/onedrive-status.py" --limit 5 >"$test_root/stamp.json"
+jq -e --arg confdir "$test_home/.config/onedrive" '.confdir == $confdir' \
+  "$test_root/stamp.json" >/dev/null || {
+  echo "a default-confdir reply did not report which directory it read" >&2
+  exit 1
+}
 
 # Today's no-flag invocation keeps exactly the fields the QML layer reads.
 python3 "$root/onedrive-status.py" --limit 5 >"$test_root/shape.json"
@@ -695,7 +713,7 @@ jq -e '
   ([keys_unsorted[]] | sort) == ([
     "ok","installed","serviceAvailable","running","enabled","activeState","subState",
     "serviceResult","serviceExitStatus","serviceFailed","resyncRequired","authenticated",
-    "reauthRequired","syncing","syncStage","statusText","resumeAt","syncDir","syncMode",
+    "reauthRequired","syncing","syncStage","statusText","resumeAt","confdir","syncDir","syncMode",
     "clientVersion","lastSyncTs","usedBytes","quotaBytes","quotaKnown","quotaCheckedTs",
     "quotaError","remoteStatus","syncStatusCheckedTs","syncStatusError","remoteCheckedTs",
     "remoteError","files","activity","lastError"

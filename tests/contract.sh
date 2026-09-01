@@ -33,7 +33,11 @@ open(sys.argv[2], "w").write(src)
 PY
 
 qml_out=$(mktemp)
-( ulimit -c 0; QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 \
+# Unset for the same reason tests/run does: an inherited gtk3 platform theme
+# tries to open the X display even under the offscreen platform, and the check
+# then fails for a reason that has nothing to do with the widget.
+( ulimit -c 0; unset QT_QPA_PLATFORMTHEME; \
+  QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 \
   "$qml_runner" -I "$root/tests/qmlstubs" "$harness" >"$qml_out" 2>&1 )
 qml_status=$?
 commands=$(sed -n 's/^qml: CMD //p' "$qml_out")
