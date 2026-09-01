@@ -426,10 +426,9 @@ Item {
     pollFinished(root.service)
   }
 
-  function elideStatus(text) {
-    var value = String(text || "").replace(/\s+/g, " ").trim()
-    return value.length > 180 ? value.substring(0, 177) + "…" : value
-  }
+  // In Model.js so it is testable; kept as a method because four handlers and
+  // two bindings call it.
+  function elideStatus(text) { return Model.elideStatus(text) }
 
   function login() {
     if (!installed) return

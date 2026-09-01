@@ -1262,7 +1262,147 @@ Item {
         harness.drain(harness.statusPayload({}))
       }
 
-      else if (s >= 111) {
+
+      // ---------------------------------------------------------------------
+      // The compatibility guarantee. With no template instances -- and whenever
+      // discovery fails outright -- the widget must still show exactly the one
+      // account it showed before this branch existed.
+      else if (s === 111) {
+        console.log("a machine with no discovered accounts still has one")
+        harness.drain(harness.statusPayload({}))
+        svc.applyDiscovery([])
+        harness.check(svc.accountCount === 1,
+          "an empty discovery leaves exactly one account, not zero")
+        harness.check(svc.accounts[0].service === "onedrive.service",
+          "...the plain service, under its legacy unit name")
+        harness.check(svc.accounts[0].instance === "",
+          "...with no instance, so it keeps the legacy resume timer")
+        harness.check(svc.accounts[0].confdir === "",
+          "...and no config directory, so the client's own default is used")
+        harness.check(svc.selectedService === "onedrive.service",
+          "...and it is selected, so every control has a target")
+        svc.accounts[0].refresh(false)
+        var plain = harness.liveWith("onedrive-status.py")
+        harness.check(plain.length === 1
+          && plain[0].indexOf("--service") === -1
+          && plain[0].indexOf("--confdir") === -1,
+          "...so it sends exactly the command a single-account machine sent before: " +
+          (plain.length === 1 ? plain[0] : "none"))
+        harness.drain(harness.statusPayload({}))
+      }
+
+      // The panel's own stale-quota retry, which is a different entry point from
+      // the selection one: Panel.open() calls the coordinator facade directly.
+      else if (s === 112) {
+        console.log("opening the panel retries a stale failed storage check")
+        svc.applyDiscovery([
+          { service: "onedrive@a.service", instance: "a", confdir: "/c/a", description: "A" },
+          { service: "onedrive@b.service", instance: "b", confdir: "/c/b", description: "B" }
+        ])
+        harness.drain(harness.statusPayload({}))
+      }
+
+      else if (s === 113) {
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@b.service", false)
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/b", quotaError: "temporary failure", quotaCheckedTs: 1 }))
+        harness.check(harness.liveWith("--quota").length === 0,
+          "nothing is checking storage yet")
+        svc.retryStaleQuotaOnOpen()
+        svc.refreshSelected()
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/b", quotaError: "temporary failure", quotaCheckedTs: 1 }))
+      }
+
+      else if (s === 114) {
+        var retried = harness.liveWith("--quota")
+        harness.check(retried.length === 1,
+          "the panel's open retries the failed check once")
+        harness.check(retried.length === 1 && retried[0].indexOf("/c/b") !== -1,
+          "...for the selected account")
+        harness.drain(harness.statusPayload({}))
+      }
+
+      // requestRefresh is the shared-slot gate for every refresh the Account
+      // starts on its own behalf. The existing test only asserted the NEGATIVE
+      // half -- that it starts nothing while another account polls -- which an
+      // empty body satisfies perfectly.
+      else if (s === 115) {
+        console.log("an internal refresh does reach the helper when the slot is free")
+        harness.drain(harness.statusPayload({}))
+        harness.check(svc.routinePollRunning() === false, "the slot is free")
+        var beforeInternal = Quickshell.spawnCount
+        svc.accounts[1].requestRefresh()
+        harness.check(Quickshell.spawnCount === beforeInternal + 1,
+          "a refresh routed through the coordinator starts exactly one poll")
+        harness.check(harness.runningStatusServices().length === 1
+          && harness.runningStatusServices()[0] === "onedrive@b.service",
+          "...for the account that asked")
+        harness.drain(harness.statusPayload({}))
+      }
+
+      // What happens when systemd-run refuses. The account is already stopped by
+      // this point, so "do nothing" leaves it paused with nothing to resume it.
+      else if (s === 116) {
+        console.log("a resume timer that cannot be scheduled recovers the account")
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@b.service", false)
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/b", running: true, activeState: "active" }))
+        svc.pauseFor(60)
+        harness.drain("")
+      }
+
+      else if (s === 117) {
+        harness.check(harness.liveWith("systemctl --user stop onedrive@b.service").length === 1,
+          "the account is stopped")
+        harness.drain("")
+      }
+
+      else if (s === 118) {
+        var run = harness.liveWith("systemd-run")
+        harness.check(run.length === 1, "the resume timer is attempted")
+        // ...and systemd refuses it.
+        var live = Quickshell.running()
+        for (var r = 0; r < live.length; r++) {
+          if ((live[r].command || []).indexOf("systemd-run") !== -1) {
+            live[r].finish(1, "")
+          }
+        }
+      }
+
+      else if (s === 119) {
+        harness.check(harness.liveWith("systemctl --user start onedrive@b.service").length === 1,
+          "a refused timer restarts the account rather than leaving it paused forever")
+        harness.check(svc.accounts[1].actionStatus.indexOf("resum") !== -1,
+          "...and says so: " + svc.accounts[1].actionStatus)
+        harness.check(svc.accounts[1].lastError !== "",
+          "...and reports why the timer could not be set")
+        harness.drain("")
+      }
+
+      else if (s === 120) {
+        // The success path is the other half: it must NOT restart the account.
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@a.service", false)
+        harness.drain(harness.statusPayload({
+          syncDir: "/d/a", running: true, activeState: "active" }))
+        svc.pauseFor(30)
+        harness.drain("")
+      }
+
+      else if (s === 121 || s === 122) { harness.drain("") }
+
+      else if (s === 123) {
+        harness.check(harness.liveWith("systemctl --user start onedrive@a.service").length === 0,
+          "a timer that WAS scheduled does not restart the account it paused")
+        harness.check(svc.accounts[0].actionStatus === "Timed pause scheduled",
+          "...and reports the pause as scheduled: " + svc.accounts[0].actionStatus)
+        harness.drain("")
+      }
+
+      else if (s >= 124) {
         // The count is printed so tests/run can tell "every check passed" from
         // "no check ran": a qml that exits 0 without executing the harness, or a
         // step loop that stops early, both used to read as success.

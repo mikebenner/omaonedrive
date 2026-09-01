@@ -113,3 +113,31 @@ test("folder, tooltip, and plugin paths handle spaces", () => {
   }), "Monitoring · Upload only")
   assert.equal(Model.filePath("file:///tmp/Oma%20OneDrive/status.py"), "/tmp/Oma OneDrive/status.py")
 })
+
+test("an error line is squashed to one line and capped", () => {
+  // systemd and the onedrive client both emit multi-line errors hundreds of
+  // characters long. Pasted straight into the panel they pushed every other row
+  // off the screen.
+  assert.equal(Model.elideStatus("  one\n  two \t three  "), "one two three")
+  assert.equal(Model.elideStatus(""), "")
+  assert.equal(Model.elideStatus(null), "")
+  assert.equal(Model.elideStatus(undefined), "")
+
+  const long = "x".repeat(400)
+  const cut = Model.elideStatus(long)
+  assert.equal(cut.length, 178, cut.length + " characters")
+  assert.ok(cut.endsWith("…"))
+  // The boundary: 180 is kept whole, 181 is cut.
+  assert.equal(Model.elideStatus("y".repeat(180)).length, 180)
+  assert.ok(!Model.elideStatus("y".repeat(180)).endsWith("…"))
+  assert.ok(Model.elideStatus("y".repeat(181)).endsWith("…"))
+  // A tall error is squashed FIRST and capped second, so what survives is 177
+  // characters of message rather than 177 characters of indentation.
+  const tall = Model.elideStatus("    a\n".repeat(100))
+  assert.ok(!tall.includes("\n"), tall)
+  assert.ok(!tall.includes("  "), tall)
+  assert.equal(tall.length, 178)
+  assert.ok(tall.startsWith("a a a a"), tall)
+  // Whitespace alone is nothing to report.
+  assert.equal(Model.elideStatus("   \n\t  "), "")
+})

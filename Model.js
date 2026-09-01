@@ -435,6 +435,16 @@ function barState(aggregate) {
   }
 }
 
+// One line of error text, fit for a tooltip or a status row.
+//
+// A systemd or onedrive error can be several hundred characters of multi-line
+// output; pasting that straight into the panel pushed every other row off the
+// screen. This lived in Account.qml, where no test could reach it.
+function elideStatus(text) {
+  var value = String(text || "").replace(/\s+/g, " ").trim()
+  return value.length > 180 ? value.substring(0, 177) + "…" : value
+}
+
 function badgeKind(kind) {
   if (kind === "resync" || kind === "reauth" || kind === "failed") return "attention"
   if (kind === "missing" || kind === "unavailable") return "missing"
@@ -806,6 +816,7 @@ if (typeof module !== "undefined") {
     aggregateAccounts: aggregateAccounts,
     aggregateTooltip: aggregateTooltip,
     composeNotification: composeNotification,
+    elideStatus: elideStatus,
     barState: barState,
     badgeKind: badgeKind,
     openSelection: openSelection,
