@@ -167,6 +167,34 @@ case " $* " in
         description='onedrive@ghost.service'
         args=''
         ;;
+      onedrive@broken.service)
+        # A unit systemd could not parse. Like masked and not-found, it has no
+        # ExecStart -- and an empty ExecStart used to read as "passes no
+        # --confdir", which aliased this instance onto the DEFAULT account.
+        load=error
+        description='onedrive@broken.service'
+        args=''
+        ;;
+      onedrive@stub.service)
+        load=stub
+        description='onedrive@stub.service'
+        args=''
+        ;;
+      onedrive@unloadable.service)
+        # LoadState=error WITH a perfectly good ExecStart. systemd could not load
+        # this unit, so it will never run: offering it as an account gives the
+        # user a tab whose pause and resume buttons do nothing. The empty-
+        # ExecStart rule does not catch this one -- only the allowlist does.
+        load=error
+        description='OneDrive sync (unloadable account)'
+        args='--monitor --confdir=/srv/onedrive/mailboxes/unloadable'
+        ;;
+      onedrive@hollow.service)
+        # Loaded, but `systemctl show` tells us nothing about what it runs.
+        load=loaded
+        description='OneDrive sync (hollow account)'
+        args=''
+        ;;
       *) exit 1 ;;
     esac
     echo "LoadState=$load"
@@ -460,10 +488,21 @@ fi
 # ExecStart must not read as "uses the default confdir"; and a unit whose
 # ExecStart carries a present-but-unusable confdir must be dropped rather than
 # silently aliased onto the default account.
+#
+# error, stub and a LOADED unit whose `systemctl show` reports no ExecStart at
+# all reach the same place by a different road: an empty ExecStart read as "this
+# unit passes no --confdir, so the client default applies", which pointed a
+# template instance at the DEFAULT account's token, cache and sync directory.
+# The rule is an allowlist -- loaded, with something to run -- not a list of the
+# bad states we happened to think of.
 units=$'onedrive.service loaded active running OneDrive Client for Linux
 onedrive@.service loaded active running OneDrive sync template
 onedrive@ghost.service not-found inactive dead onedrive@ghost.service
 onedrive@masked.service masked inactive dead onedrive@masked.service
+onedrive@broken.service error inactive dead onedrive@broken.service
+onedrive@stub.service stub inactive dead onedrive@stub.service
+onedrive@unloadable.service error inactive dead OneDrive sync (unloadable account)
+onedrive@hollow.service loaded inactive dead OneDrive sync (hollow account)
 onedrive@bogus.service loaded inactive dead OneDrive sync (bogus account)
 onedrive@work.service loaded inactive dead OneDrive sync (work account)
 onedrive@personal.service loaded active running OneDrive sync (personal account)'
@@ -472,6 +511,11 @@ log_lines_before=$(wc -l <"$FAKE_ONEDRIVE_LOG")
 FAKE_UNITS="$units" python3 "$root/onedrive-status.py" --list-accounts >"$test_root/accounts.json"
 jq -e --arg default_confdir "$test_home/.config/onedrive" '
   length == 3
+  and ([.[].service] | index("onedrive@broken.service")) == null
+  and ([.[].service] | index("onedrive@stub.service")) == null
+  and ([.[].service] | index("onedrive@hollow.service")) == null
+  and ([.[].service] | index("onedrive@unloadable.service")) == null
+  and ([.[] | select(.confdir == $default_confdir)] | length) == 1
   and .[0].service == "onedrive.service"
   and .[0].instance == ""
   and .[0].confdir == $default_confdir
@@ -688,6 +732,122 @@ done
 python3 "$root/onedrive-status.py" --confdir "$test_home/.config/../.config/onedrive" --limit 5 \
   >"$test_root/dotdot.json"
 jq -e --arg sync_dir "$sync_dir" '.syncDir == $sync_dir' "$test_root/dotdot.json" >/dev/null
+# Every reply names the config directory it actually READ, canonicalised. The
+# widget's startup poll runs before discovery has read the unit's ExecStart, so
+# it uses the client's default; without this stamp the widget cannot tell that
+# reply apart from one describing the account it later learns this unit is, and
+# it showed the default account's sync directory, quota and token state under
+# the other account's name.
+jq -e --arg confdir "$test_home/.config/onedrive" '.confdir == $confdir' \
+  "$test_root/dotdot.json" >/dev/null || {
+  echo "the reply did not report the canonical confdir it read" >&2
+  jq -r '.confdir' "$test_root/dotdot.json" >&2
+  exit 1
+}
+python3 "$root/onedrive-status.py" --limit 5 >"$test_root/stamp.json"
+
+# THE invariant behind the stamp: the directory discovery reports for an account
+# and the directory a poll of that account reports must be byte-identical. If
+# they ever diverge -- an un-normalised default, a trailing slash -- the widget
+# refuses every reply and that account shows nothing, for ever, with no error to
+# explain it. Check it for the plain service, whose confdir comes from
+# default_confdir() on one path and canonical_confdir() on the other.
+FAKE_UNITS='onedrive.service loaded active running OneDrive Client for Linux' \
+  python3 "$root/onedrive-status.py" --list-accounts >"$test_root/stamp-accounts.json"
+discovered=$(jq -r '.[0].confdir' "$test_root/stamp-accounts.json")
+polled=$(python3 "$root/onedrive-status.py" \
+  --confdir "$discovered" --limit 5 | jq -r '.confdir')
+if [[ "$discovered" != "$polled" ]]; then
+  echo "discovery and polling disagree about the same account's confdir" >&2
+  echo "  discovery: $discovered" >&2
+  echo "  poll:      $polled" >&2
+  exit 1
+fi
+# ...and it holds when XDG_CONFIG_HOME is not already normalised, which is where
+# the two paths used to diverge.
+# pathlib silently drops "." segments but keeps "..", so ".." is the form that
+# actually reaches normpath and diverges.
+odd_home="$test_home/.config/../.config"
+XDG_CONFIG_HOME="$odd_home" FAKE_UNITS='onedrive.service loaded active running OneDrive Client for Linux' \
+  python3 "$root/onedrive-status.py" --list-accounts >"$test_root/odd-accounts.json"
+# Polled the way the WIDGET polls it: with the confdir discovery just reported.
+# That is the path that normalises, so this is where the two used to diverge.
+XDG_CONFIG_HOME="$odd_home" python3 "$root/onedrive-status.py" \
+  --confdir "$(jq -r '.[0].confdir' "$test_root/odd-accounts.json")" --limit 5 \
+  >"$test_root/odd-stamp.json"
+odd_discovered=$(jq -r '.[0].confdir' "$test_root/odd-accounts.json")
+odd_polled=$(jq -r '.confdir' "$test_root/odd-stamp.json")
+if [[ "$odd_discovered" != "$odd_polled" ]]; then
+  echo "an unnormalised XDG_CONFIG_HOME made discovery and polling disagree" >&2
+  echo "  discovery: $odd_discovered" >&2
+  echo "  poll:      $odd_polled" >&2
+  exit 1
+fi
+if [[ "$odd_discovered" == *"/../"* ]]; then
+  echo "the reported confdir was not normalised: $odd_discovered" >&2
+  exit 1
+fi
+
+# A cache file that is valid JSON but has a string where a number belongs used to
+# raise ValueError before the code that would have repaired or replaced it. One
+# bad byte -- an editor, a truncated write, a botched migration -- and that
+# account's helper failed on EVERY poll from then on, for ever, with no way out
+# but finding and deleting the file. The reply below must still be produced.
+default_cache="$XDG_STATE_HOME/omarchy/io.github.salemsayed.omaonedrive/status-cache.json"
+cat >"$default_cache" <<'JSON'
+{"scanLimit":"not-a-number","scanAt":"also-bad","usedBytes":null,"quotaBytes":[],
+ "quotaCheckedTs":1e999,"remoteStatus":"Not checked","files":[]}
+JSON
+python3 "$root/onedrive-status.py" --limit 5 >"$test_root/badcache.json" || {
+  echo "a malformed cache value killed the helper" >&2
+  exit 1
+}
+jq -e '.ok == true and .usedBytes == 0 and .quotaBytes == 0 and .quotaCheckedTs == 0' \
+  "$test_root/badcache.json" >/dev/null || {
+  echo "a malformed cache was not treated as absent" >&2
+  exit 1
+}
+# JSON's 1e999 parses to float infinity, which int() refuses with OverflowError
+# rather than ValueError -- a different exception through the same fatal door.
+jq -e '.quotaCheckedTs == 0' "$test_root/badcache.json" >/dev/null || {
+  echo "an infinite cache value was not treated as absent" >&2
+  exit 1
+}
+# A truncated write -- the ordinary way this file goes wrong, on a full disk or
+# a hard poweroff -- must also be survivable.
+printf '{"usedBytes": 12' >"$default_cache"
+python3 "$root/onedrive-status.py" --limit 5 >"$test_root/truncated.json" || {
+  echo "a truncated cache killed the helper" >&2
+  exit 1
+}
+jq -e '.ok == true and .usedBytes == 0' "$test_root/truncated.json" >/dev/null || {
+  echo "a truncated cache was not discarded" >&2
+  exit 1
+}
+# ...and a cache that is valid JSON but not an object at all.
+printf '["not", "an", "object"]' >"$default_cache"
+python3 "$root/onedrive-status.py" --limit 5 >/dev/null || {
+  echo "a non-object cache killed the helper" >&2
+  exit 1
+}
+
+cat >"$default_cache" <<'JSON'
+{"scanLimit":"not-a-number","scanAt":"also-bad","files":[]}
+JSON
+python3 "$root/onedrive-status.py" --limit 5 >/dev/null
+# ...and the next write repairs it, rather than leaving the bad value to be
+# re-read for ever.
+jq -e '(.scanLimit | type) == "number" and (.scanAt | type) == "number"' \
+  "$default_cache" >/dev/null || {
+  echo "the cache was not repaired on save" >&2
+  cat "$default_cache" >&2
+  exit 1
+}
+jq -e --arg confdir "$test_home/.config/onedrive" '.confdir == $confdir' \
+  "$test_root/stamp.json" >/dev/null || {
+  echo "a default-confdir reply did not report which directory it read" >&2
+  exit 1
+}
 
 # Today's no-flag invocation keeps exactly the fields the QML layer reads.
 python3 "$root/onedrive-status.py" --limit 5 >"$test_root/shape.json"
@@ -695,7 +855,7 @@ jq -e '
   ([keys_unsorted[]] | sort) == ([
     "ok","installed","serviceAvailable","running","enabled","activeState","subState",
     "serviceResult","serviceExitStatus","serviceFailed","resyncRequired","authenticated",
-    "reauthRequired","syncing","syncStage","statusText","resumeAt","syncDir","syncMode",
+    "reauthRequired","syncing","syncStage","statusText","resumeAt","confdir","syncDir","syncMode",
     "clientVersion","lastSyncTs","usedBytes","quotaBytes","quotaKnown","quotaCheckedTs",
     "quotaError","remoteStatus","syncStatusCheckedTs","syncStatusError","remoteCheckedTs",
     "remoteError","files","activity","lastError"
@@ -936,26 +1096,28 @@ if python3 "$root/onedrive-status.py" --list-accounts '--service=-Mguest.service
   exit 1
 fi
 
-grep -Fq '["systemctl", "--user", "stop", "onedrive.service"]' "$root/Service.qml"
-grep -Fq '["systemctl", "--user", "start", "onedrive.service"]' "$root/Service.qml"
-grep -Fq '["omarchy-launch-terminal", "onedrive"]' "$root/Service.qml"
-grep -Fq '["omarchy-launch-terminal", "onedrive", "--reauth"]' "$root/Service.qml"
-grep -Fq '["omarchy-launch-terminal", "onedrive", "--sync", "--resync"]' "$root/Service.qml"
-grep -Fq '"notify-send"' "$root/Service.qml"
+# The command vectors themselves are asserted as exact arrays, with injected
+# account identity, in tests/Commands.test.js. Greping the QML for hard-coded
+# unit names is what those tests replace: a per-account vector has no fixed
+# string to grep for, and re-pinning one account's spelling here would only
+# assert that the multi-account work had not happened.
 grep -Fq 'retryStaleQuotaOnOpen' "$root/Panel.qml"
 grep -Fq '(oneDrive.syncing ? "Syncing" : (oneDrive.active ? "Monitoring" : "Paused"))' "$root/Panel.qml"
-grep -Fq 'command.push("--quota")' "$root/Service.qml"
-grep -Fq 'command.push("--sync-status")' "$root/Service.qml"
-grep -Fq '"--unit=" + resumeUnit' "$root/Service.qml"
-grep -Fq '"--on-active=" + String(minutes) + "m"' "$root/Service.qml"
-grep -Fq '"/usr/bin/systemctl", "--user", "start", "onedrive.service"' "$root/Service.qml"
+
 # Resync may only ever run interactively through omarchy-launch-terminal (the
 # CLI prompts for confirmation there); every direct or scripted mutation stays
-# forbidden.
-if grep -v 'omarchy-launch-terminal' "$root/Service.qml" \
-  | grep -Eq 'bash.*-c|--resync|--logout|--sync([^a-z-]|$)'; then
-  echo "service boundary includes an unsafe OneDrive mutation" >&2
-  exit 1
-fi
+# forbidden. The QML must now contain NO mutating flag at all, because every
+# command vector is built in Commands.js. Commands.js itself is deliberately not
+# line-scanned -- it builds arrays across several lines, which a line-based grep
+# cannot reason about -- and is instead covered behaviourally by the
+# "--resync appears only in the interactive terminal vector" test in
+# tests/Commands.test.js, which exercises every builder and inspects its output.
+for boundary_file in Service.qml Account.qml Panel.qml BarWidget.qml; do
+  if grep -v 'omarchy-launch-terminal' "$root/$boundary_file" \
+    | grep -Eq 'bash.*-c|--resync|--logout|--sync([^a-z-]|$)'; then
+    echo "service boundary includes an unsafe OneDrive mutation: $boundary_file" >&2
+    exit 1
+  fi
+done
 
 echo "Status tests passed (local state, timed pause, remote opt-in, cache, permissions, login, multi-account discovery, --confdir and control boundaries)"

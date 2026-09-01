@@ -44,18 +44,23 @@ def command_output(command, timeout=4):
   return completed.returncode, (completed.stdout + completed.stderr).strip()
 
 
-def default_confdir():
-  config_home = os.environ.get("XDG_CONFIG_HOME")
-  if config_home:
-    return Path(config_home) / "onedrive"
-  return Path.home() / ".config" / "onedrive"
-
-
 def canonical_confdir(value):
   # Collapses "." and ".." segments and any trailing slash so one account cannot
   # key two different caches. Deliberately not realpath(): resolving symlinks
   # would silently move an account whose config directory is a link.
   return Path(os.path.normpath(str(value)))
+
+
+def default_confdir():
+  # Canonical, like every other confdir we report. The widget compares the
+  # directory a reply says it read against the one discovery gave it, and refuses
+  # a mismatch -- so if discovery reported "/home/u/./config/onedrive" and a poll
+  # reported the normalised form, that account would be refused on every poll for
+  # ever, showing nothing and saying nothing.
+  config_home = os.environ.get("XDG_CONFIG_HOME")
+  if config_home:
+    return canonical_confdir(Path(config_home) / "onedrive")
+  return canonical_confdir(Path.home() / ".config" / "onedrive")
 
 
 def valid_confdir(value):
@@ -97,13 +102,39 @@ def state_dir():
   return base / "omarchy" / PLUGIN_ID
 
 
+# Every cache field that is used as a number. The cache is JSON we wrote, but it
+# is also a file on disk that anything can edit, and a *valid* JSON document with
+# a string where a number belongs used to raise ValueError before the code that
+# would have repaired or replaced it -- so one bad byte made that account's
+# helper fail on every poll, for ever, with no way out but deleting the file.
+CACHE_INTS = (
+  "scanLimit", "scanAt", "usedBytes", "quotaBytes",
+  "quotaCheckedTs", "syncStatusCheckedTs", "remoteCheckedTs",
+)
+
+
 def load_cache(path):
   try:
     with path.open("r", encoding="utf-8") as handle:
       value = json.load(handle)
-      return value if isinstance(value, dict) else {}
   except (OSError, json.JSONDecodeError):
     return {}
+  if not isinstance(value, dict):
+    return {}
+  # Coerce here, once, rather than at every use site: a field that cannot be a
+  # number is treated as absent, and the next save writes it back correctly.
+  for key in CACHE_INTS:
+    if key not in value:
+      continue
+    try:
+      value[key] = int(value[key] or 0)
+    except (TypeError, ValueError, OverflowError):
+      # OverflowError is the one that is easy to miss: JSON's 1e999 parses to
+      # float infinity, which int() refuses. Like the others, it killed the
+      # helper for that account on every poll, for ever, before anything could
+      # repair the file.
+      value.pop(key, None)
+  return value
 
 
 def save_cache(path, value):
@@ -496,16 +527,28 @@ def account_entry(unit):
   if properties is None:
     return None
   load_state = (properties.get("LoadState") or [""])[0]
-  # not-found is a stale enablement symlink; masked is a unit deliberately turned
-  # off, whose empty ExecStart would otherwise read as "uses the default confdir".
-  if load_state in ("not-found", "masked"):
+  # An allowlist, not a denylist. not-found is a stale enablement symlink and
+  # masked is a unit deliberately turned off, but "error", "stub" and
+  # "bad-setting" leave ExecStart empty in exactly the same way -- and an empty
+  # ExecStart then read as "this unit passes no --confdir, so the client default
+  # applies", aliasing a template instance onto the DEFAULT account's token,
+  # cache and sync directory. That is the identity leak the masked case was
+  # already there to prevent.
+  if load_state != "loaded":
     return None
   # All ExecStart lines are considered together: systemd emits one line per
   # record, and the "prefer the record whose argv[0] is onedrive" rule only
   # means anything when it can see every record at once.
-  confdir = confdir_from_exec_start("\n".join(properties.get("ExecStart", [])))
+  exec_start = [line for line in properties.get("ExecStart", []) if line.strip()]
+  if not exec_start:
+    # Loaded, but with nothing to run: `systemctl show` answered with no
+    # properties, or the unit has no ExecStart. Either way we have learned
+    # nothing about where this account lives, and answering with the default
+    # would be a claim about identity we cannot support.
+    return None
+  confdir = confdir_from_exec_start("\n".join(exec_start))
   if confdir is None:
-    # The unit passes no --confdir at all, so the client default genuinely applies.
+    # The unit really does pass no --confdir, so the client default applies.
     confdir = str(default_confdir())
   elif valid_confdir(confdir):
     confdir = str(canonical_confdir(confdir))
@@ -916,7 +959,7 @@ def build_status(args):
     # answering with the default account's data would be a lie about identity.
     confdir = canonical_confdir(entry["confdir"]) if entry else None
   else:
-    confdir = default_confdir()
+    confdir = canonical_confdir(default_confdir())
   config = client_config(confdir, onedrive_path) if confdir else {
     "syncDir": None,
     "syncMode": "Two-way",
@@ -1041,6 +1084,12 @@ def build_status(args):
     "syncStage": journal["syncStage"] if service["running"] else "",
     "statusText": status_text(onedrive_path is not None, authenticated, service, journal, resume_at),
     "resumeAt": resume_at,
+    # The identity stamp. The widget cannot otherwise tell whether a reply
+    # describes the account it now believes this unit to be: the startup poll
+    # runs before discovery has read the unit's ExecStart, so it uses the
+    # client's default directory, and if the unit overrides it that reply belongs
+    # to a different account entirely.
+    "confdir": str(confdir) if confdir else "",
     "syncDir": str(sync_dir) if sync_dir else "",
     "syncMode": config["syncMode"],
     "clientVersion": config["clientVersion"],

@@ -23,10 +23,40 @@ guessing a confdir from an instance name), that `--confdir` selects an account
 and gives it its own cache *and* lock, that the confdir reaches the client as
 exactly one argument and cannot introduce a second flag, that the helper never
 creates a config directory it was only asked to read, that `--resume-unit` reads
-that account's own timer and no other's, that an account discovered by
+that account's own timer and no other's, that the scheduler interleaves accounts
+that have not reported rather than letting one monopolise the ramp, that a cloud
+check waiting behind a routine poll still holds the shared slot, that an account
+discovered by
 `--list-accounts` always survives the `--service` gate, that a present-but-
 unusable confdir is dropped rather than aliased onto the default account, and
 that the no-flag JSON output keeps exactly its expected field set.
+
+The QML layer's pure logic is covered by node tests: `tests/Commands.test.js`
+asserts every command vector as an exact array for both a plain service and a
+template instance, `tests/Aggregate.test.js` covers all ten account states and
+the worst-of-N rules, `tests/Discovery.test.js` covers reconciling discovery
+results without churning delegates, and `tests/Notifications.test.js` covers
+grouping a burst of events into one notification.
+
+## Multiple accounts, by hand
+
+With a plain `onedrive.service` only, the panel must be pixel-identical to the
+single-account screenshots: no selector row, no extra spacing, hero title
+`OneDrive`.
+
+With template instances (`onedrive@a`, `onedrive@b`, …):
+
+- each account appears once in the selector, named from its instance;
+- switching accounts changes the hero, storage, activity and every control,
+  returns the scroll to the top, and leaves keyboard navigation working;
+- pausing one account for 15 minutes leaves the others running, and its timer
+  resumes only that account;
+- one account failing while another syncs shows the attention badge while the
+  cloud icon stays lit;
+- removing the selected unit and waiting for rediscovery falls back to the
+  first remaining account rather than emptying the panel;
+- restarting the shell with an active timed pause still shows the pending
+  resume for the right account.
 
 ## In the shell
 
