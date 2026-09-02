@@ -998,6 +998,12 @@ Item {
       else if (s >= 78 && s <= 87) {
         harness.check(svc.accounts[1].active === false,
           "B stays paused on screen while no poll can confirm it (tick " + (s - 77) + ")")
+        // ...and it is still ASKING. The settle loop's give-up threshold could
+        // be inverted -- stop after one tick instead of thirty -- and nothing
+        // noticed; the account then lost its scheduler priority and the
+        // confirming poll came whenever the round-robin happened to reach it.
+        harness.check(svc.accounts[1].settling === true,
+          "...and is still waiting for its confirming poll (tick " + (s - 77) + ")")
       }
 
       else if (s === 88) {
@@ -2037,7 +2043,214 @@ Item {
         harness.drain(harness.statusPayload({}))
       }
 
-      else if (s >= 184) {
+
+      // ---------------------------------------------------------------------
+      // Three conditions a sweep could invert with the suite green.
+      else if (s === 184) {
+        console.log("settings survive garbage, and real values are actually used")
+        // The NaN guard: a setting that cannot parse falls back. Without the
+        // guard, NaN reaches the poll timer's interval arithmetic.
+        svc.settings = ({ refreshIntervalSec: "not-a-number",
+                          recentFileLimit: 5, notifications: true })
+        harness.check(svc.refreshIntervalSec === 30,
+          "a setting that cannot be a number falls back to the default")
+        // ...and the discriminating half: a real value is USED. Inverting the
+        // guard made every setting its fallback, and nothing noticed.
+        svc.settings = ({ refreshIntervalSec: 45, recentFileLimit: 5, notifications: true })
+        harness.check(svc.refreshIntervalSec === 45,
+          "a real value is used, not the fallback")
+        svc.settings = ({ refreshIntervalSec: 10, recentFileLimit: 5, notifications: true })
+      }
+
+      else if (s === 185) {
+        console.log("the account's own error outranks the discovery warning")
+        // A clean slate first: earlier steps leave residual account errors, and
+        // this test is about precedence, not history.
+        svc.selectAccount("onedrive@a.service", false)
+        harness.drain(harness.statusPayload({ confdir: "/c/a" }))
+        harness.check(svc.selectedAccount.lastError === "", "the account starts clean")
+        svc.reloadAccounts()
+        var disc5 = Quickshell.runningWith("--list-accounts")
+        harness.check(disc5.length === 1, "a discovery is running")
+        disc5[0].finish(1, "")
+        harness.check(svc.discoveryError !== "" && svc.lastError === svc.discoveryError,
+          "with nothing else wrong, the facade shows the discovery warning")
+        // Now the selected account itself fails...
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", "this is not json")
+        harness.check(svc.selectedAccount.lastError !== "",
+          "the account carries its own error")
+        harness.check(svc.lastError === svc.selectedAccount.lastError
+          && svc.lastError !== svc.discoveryError,
+          "...which outranks the stale-list warning: the account's problem is\n" +
+          "        actionable NOW, the warning is background")
+      }
+
+      else if (s === 186) {
+        // Both clear, and the facade goes quiet -- pinning the empty case too.
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({ confdir: "/c/a" }))
+        svc.reloadAccounts()
+        var disc6 = Quickshell.runningWith("--list-accounts")
+        if (disc6.length === 1) disc6[0].finish(0, harness.discoveryPayload(["a", "b"]))
+        harness.check(svc.lastError === "",
+          "a healthy poll and a working discovery clear the facade: " + svc.lastError)
+      }
+
+      else if (s === 187) {
+        console.log("a discovery that starts normally raises no false alarm")
+        svc.reloadAccounts()
+        harness.check(Quickshell.runningWith("--list-accounts").length === 1,
+          "discovery is running")
+      }
+
+      else if (s === 188) {
+        // A tick has passed, so the deferred failure-to-start check has run and
+        // found the process alive. Inverting its condition armed it on START
+        // instead: every discovery then reported "Could not run the OneDrive
+        // status helper" while running perfectly well.
+        harness.check(svc.discoveryError === "",
+          "no could-not-run alarm while discovery is merely still running: "
+          + svc.discoveryError)
+        var disc7 = Quickshell.runningWith("--list-accounts")
+        if (disc7.length === 1) disc7[0].finish(0, harness.discoveryPayload(["a", "b"]))
+        harness.check(svc.discoveryError === "", "...and none after it succeeds")
+        harness.drain(harness.statusPayload({}))
+      }
+
+
+      // ---------------------------------------------------------------------
+      // The Account.qml conditions the sweep could invert undetected.
+      // A timed pause on an account that is ALREADY stopped must re-arm the
+      // timer without issuing a stop.
+      else if (s === 189) {
+        console.log("a timed pause on a stopped account re-arms the timer only")
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@b.service", false)
+        harness.drain(harness.statusPayload({
+          confdir: "/c/b", syncDir: "/d/b", running: false, activeState: "inactive" }))
+        harness.check(svc.selectedAccount.active === false, "B is stopped")
+        svc.pauseFor(20)
+        harness.drain("")
+      }
+
+      else if (s === 190) {
+        harness.check(harness.liveWith("systemctl --user stop onedrive@b.service").length === 0,
+          "no stop is sent to a unit that is already stopped")
+        var rearm = harness.liveWith("systemd-run")
+        harness.check(rearm.length === 1
+          && rearm[0].indexOf("--on-active=20m") !== -1
+          && rearm[0].indexOf("--unit=omaonedrive-resume@b") !== -1,
+          "...but the resume timer is re-armed for the new duration")
+        harness.drain("")
+      }
+
+      // A systemd-run that HANGS -- starts, never exits -- is different from one
+      // that fails or cannot start, and only its watchdog can end it.
+      else if (s === 191) {
+        console.log("a hanging systemd-run is abandoned and the account recovered")
+        svc.settings = ({ refreshIntervalSec: 10, recentFileLimit: 5,
+                          notifications: true, statusTimeoutMs: 200 })
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@b.service", false)
+        harness.drain(harness.statusPayload({
+          confdir: "/c/b", syncDir: "/d/b", running: true, activeState: "active" }))
+        svc.pauseFor(30)
+        harness.drain("")
+      }
+
+      else if (s === 192) { harness.drain("") }
+
+      else if (s === 193) {
+        harness.check(harness.liveWith("systemd-run").length === 1,
+          "the schedule is in flight and will never return")
+      }
+
+      else if (s >= 194 && s <= 197) { /* let the watchdog run */ }
+
+      else if (s === 198) {
+        harness.check(harness.liveWith("systemd-run").length === 0,
+          "the watchdog gives up on the hung schedule")
+        harness.check(harness.liveWith("systemctl --user start onedrive@b.service").length === 1,
+          "...and recovery starts the account it had stopped")
+        // Complete the recovery, and the interim message must settle into the
+        // final one -- the old assert matched both, so the completion branch
+        // could be inverted undetected.
+        var rec = Quickshell.running()
+        for (var r = 0; r < rec.length; r++) {
+          if ((rec[r].command || []).join(" ").indexOf("start onedrive@b.service") !== -1) {
+            rec[r].finish(0, "")
+          }
+        }
+        harness.check(svc.accounts[1].actionStatus === "Timed pause failed; syncing resumed",
+          "...and says so once the recovery completes: " + svc.accounts[1].actionStatus)
+        svc.settings = ({ refreshIntervalSec: 10, recentFileLimit: 5, notifications: true })
+      }
+
+      // What a finished cloud check tells the user, in all three shapes -- and
+      // that a routine poll says nothing at all.
+      else if (s === 199) {
+        console.log("a finished cloud check reports; a routine poll stays quiet")
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@a.service", false)
+        harness.drain(harness.statusPayload({ confdir: "/c/a" }))
+        svc.accounts[0].checkQuota()
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({
+          confdir: "/c/a", quotaKnown: true, quotaBytes: 100, usedBytes: 1 }))
+        harness.check(svc.accounts[0].actionStatus === "Storage refreshed",
+          "a successful storage check says so: " + svc.accounts[0].actionStatus)
+      }
+
+      else if (s === 200) {
+        svc.accounts[0].checkFullStatus()
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({ confdir: "/c/a" }))
+        harness.check(svc.accounts[0].actionStatus === "Sync verified",
+          "a successful sync check says so: " + svc.accounts[0].actionStatus)
+      }
+
+      else if (s === 201) {
+        svc.accounts[0].checkQuota()
+        harness.finishStatus("onedrive@a.service", "", 1)
+        harness.check(svc.accounts[0].actionStatus !== ""
+          && svc.accounts[0].actionStatus === svc.accounts[0].lastError,
+          "a FAILED check reports its error: " + svc.accounts[0].actionStatus)
+      }
+
+      else if (s === 202) {
+        // The other half of the gate: a routine poll must not claim anything.
+        svc.accounts[0].actionStatus = ""
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({ confdir: "/c/a" }))
+        harness.check(svc.accounts[0].actionStatus === "",
+          "a routine poll sets no action message: " + svc.accounts[0].actionStatus)
+      }
+
+      // A cloud check requested while that account's routine poll is in flight
+      // is deferred on the ACCOUNT (not the coordinator queue), and must still
+      // run when the poll lands.
+      else if (s === 203) {
+        console.log("a cloud check requested mid-poll still runs afterwards")
+        svc.accounts[0].refresh(false)
+        harness.check(harness.statusProcessFor("onedrive@a.service") !== null,
+          "a routine poll is in flight")
+        svc.accounts[0].checkQuota()
+        harness.check(harness.liveWith("--quota").length === 0,
+          "...so the storage check is deferred, not run concurrently")
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({ confdir: "/c/a" }))
+      }
+
+      else if (s === 204) {
+        var deferred = harness.liveWith("--quota")
+        harness.check(deferred.length === 1,
+          "the deferred check starts once the poll lands")
+        harness.check(deferred.length === 1 && deferred[0].indexOf("/c/a") !== -1,
+          "...for the account that asked")
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({
+          confdir: "/c/a", quotaKnown: true, quotaBytes: 100, usedBytes: 1 }))
+        harness.drain(harness.statusPayload({}))
+      }
+
+      else if (s >= 205) {
         // The count is printed so tests/run can tell "every check passed" from
         // "no check ran": a qml that exits 0 without executing the harness, or a
         // step loop that stops early, both used to read as success.
