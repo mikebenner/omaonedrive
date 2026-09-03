@@ -188,3 +188,40 @@ test("the hero line names the sync mode only when it means something", () => {
     "Monitoring")
   assert.equal(Model.heroMeta(null), "Checking…")
 })
+
+test("markup in helper data cannot become rich text at inherited boundaries", () => {
+  // From upstream 1.5.6: Omarchy 4.0.1's shared bar tooltip and PanelHero use
+  // Text.AutoText, so a filename shaped like markup would render as markup.
+  // The delimiters are swapped for lookalikes, so the name stays readable.
+  const markupStatus = {
+    installed: true,
+    authenticated: true,
+    statusText: "Uploading <b>quarterly report</b>.pdf",
+    syncMode: "Two-way",
+    lastSyncTs: 0
+  }
+  assert.equal(Model.tooltip(markupStatus),
+    "Uploading ‹b›quarterly report‹/b›.pdf · Two-way")
+  assert.equal(Model.heroMeta(markupStatus),
+    "Uploading ‹b›quarterly report‹/b›.pdf · Two-way")
+  assert.doesNotMatch(Model.tooltip(markupStatus), /[<>]/)
+
+  // The multi-account tooltip is the SAME shared bar boundary, and its lines
+  // carry helper-derived names and errors too.
+  const fleet = Model.aggregateTooltip([
+    { initialized: true, installed: true, authenticated: true, serviceAvailable: true,
+      running: true, activeState: "active", instance: "a<script>",
+      description: "OneDrive sync (a<script> account)",
+      statusText: "Uploading <img> file", syncMode: "Two-way", lastSyncTs: 0 },
+    { initialized: true, installed: true, authenticated: true, serviceAvailable: true,
+      running: true, activeState: "active", instance: "b", description: "",
+      statusText: "Monitoring", syncMode: "Two-way", lastSyncTs: 0 }
+  ], Date.now())
+  assert.doesNotMatch(fleet, /[<>]/, fleet)
+  assert.ok(fleet.includes("‹img›"), fleet)
+  // ...and the broken-account error path.
+  const broken = Model.aggregateTooltip(
+    [{ initialized: false, attempted: true, instance: "x",
+       lastError: "systemd said <no>" }], Date.now())
+  assert.doesNotMatch(broken, /[<>]/, broken)
+})

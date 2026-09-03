@@ -352,7 +352,7 @@ Item {
   // Transitions are reported, not delivered. The coordinator batches whatever
   // arrives in one polling burst into at most one desktop notification, so three
   // accounts going wrong together do not produce three popups.
-  function report(kind, summary, short, body, action, actionLabel) {
+  function report(kind, summary, short, body, action) {
     transition({
       service: root.service,
       name: displayName,
@@ -360,8 +360,7 @@ Item {
       summary: summary,
       short: short,
       body: body,
-      action: action || "",
-      actionLabel: actionLabel || ""
+      action: action || ""
     })
   }
 
@@ -431,16 +430,13 @@ Item {
 
     if (resyncRequired && !wasResync)
       report("resync", "OneDrive needs a resync", "Resync required",
-        "Syncing stopped until the resync repair runs.",
-        "repair", "Run resync repair")
+        "Syncing stopped until the resync repair runs.", "repair")
     else if (serviceFailed && !wasFailed)
       report("failed", "OneDrive sync failed", "Sync failed",
-        lastError !== "" ? lastError : "The OneDrive service entered a failed state.",
-        "open", "Open OneDrive panel")
+        lastError !== "" ? lastError : "The OneDrive service entered a failed state.", "open")
     if (reauthRequired && !wasReauth)
       report("reauth", "OneDrive needs reauthentication", "Reauthentication required",
-        "Sign in again to keep syncing.",
-        "open", "Open OneDrive panel")
+        "Sign in again to keep syncing.", "open")
     // Recovery is only meaningful for an account that was seen unhealthy first.
     if (hadAttention && !serviceFailed && !resyncRequired && !reauthRequired)
       report("recovered", "OneDrive recovered", "Recovered", "Syncing is healthy again.")

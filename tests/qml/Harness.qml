@@ -60,21 +60,12 @@ Item {
 
   // The argv of the notify-send this burst produced, whether it was launched
   // detached (no action) or as a tracked process (with one).
+  // Every notification is fire-and-forget now: the click command travels
+  // INSIDE it as a persisted --exec hint, so there is no tracked process left
+  // to complete. "Clicking" in a test means asserting the exec argv and then
+  // driving the Service function that argv names.
   function notifySent() {
-    var hits = harness.detachedWith("notify-send")
-    var live = harness.liveWith("notify-send")
-    return hits.concat(live)
-  }
-
-  // Complete a tracked notify-send as if the user clicked its action button.
-  function clickNotification() {
-    var live = Quickshell.running()
-    for (var i = 0; i < live.length; i++) {
-      if ((live[i].command || []).indexOf("notify-send") !== -1) {
-        return live[i].finish(0, "default")
-      }
-    }
-    return false
+    return harness.detachedWith("omarchy-notification-send")
   }
 
   // Every detached command issued so far whose argv contains `text`. Tests clear
@@ -550,7 +541,7 @@ Item {
         svc.enqueueTransition({
           service: "onedrive@a.service", name: "A", kind: "reauth",
           summary: "OneDrive needs reauthentication", short: "Reauthentication required",
-          body: "b", action: "open", actionLabel: "Open OneDrive panel"
+          body: "b", action: "open"
         })
         harness.streamTicks += 1
       }
@@ -1767,18 +1758,29 @@ Item {
         harness.check(resync.length === 1, "a new resync requirement notifies once")
         harness.check(resync.length === 1 && resync[0].indexOf("needs a resync") !== -1,
           "...as a resync, not as the failure it also sets: " + (resync[0] || ""))
-        harness.check(resync.length === 1 && resync[0].indexOf("--action=default=Run resync repair") !== -1,
-          "...offering the repair as its button: " + (resync[0] || ""))
+        // The click command is carried IN the popup and names the account, so
+        // the daemon can deliver it to a freshly reloaded shell.
+        harness.check(resync.length === 1 && resync[0].indexOf(
+          "--exec omarchy-shell io.github.salemsayed.omaonedrive repairAccount onedrive@a.service") !== -1,
+          "...carrying the repair exec for that account: " + (resync[0] || ""))
       }
 
       else if (s === 152) {
-        // Clicking "Run resync repair" must actually run it.
+        // The click arrives as `omarchy-shell … repairAccount <service>`, whose
+        // body is Service.repairFromNotification. Drive it.
         Quickshell.detached = []
-        harness.check(harness.clickNotification(), "the notification is clickable")
+        svc.repairFromNotification("onedrive@a.service")
         harness.check(harness.detachedWith("--sync --resync").length === 1,
-          "clicking the repair action runs the resync for that account")
+          "the repair click runs the resync for that account")
         harness.check(harness.detachedWith("--confdir /c/a").length === 1,
           "...against its own config directory")
+        // A popup can outlive its account. A repair on the WRONG account
+        // deletes and re-downloads the wrong drive, so a stale target repairs
+        // nothing rather than whatever is selected.
+        Quickshell.detached = []
+        svc.repairFromNotification("onedrive@gone.service")
+        harness.check(Quickshell.detached.length === 0,
+          "a repair click for a vanished account does nothing at all")
         harness.drain("")
       }
 
@@ -1827,14 +1829,23 @@ Item {
         var auth = harness.notifySent()
         harness.check(auth.length === 1 && auth[0].indexOf("reauthentication") !== -1,
           "a new reauthentication requirement notifies: " + (auth[0] || ""))
+        harness.check(auth.length === 1 && auth[0].indexOf(
+          "--exec omarchy-shell io.github.salemsayed.omaonedrive openAccount onedrive@a.service") !== -1,
+          "...and its click opens the panel on that account: " + (auth[0] || ""))
       }
 
       else if (s === 157) {
-        // Clicking a non-repair notification opens the panel on that account.
+        // The click arrives as `omarchy-shell … openAccount <service>`; the
+        // Service half selects, the BarWidget half opens the panel.
         svc.selectedService = ""
-        harness.check(harness.clickNotification(), "the notification is clickable")
+        svc.openFromNotification("onedrive@a.service")
         harness.check(svc.selectedService === "onedrive@a.service",
-          "clicking it selects the account the notification was about")
+          "the open click selects the account the notification was about")
+        // ...but an account that vanished since the popup fired must not block
+        // the open, and must not move the selection either.
+        svc.openFromNotification("onedrive@gone.service")
+        harness.check(svc.selectedService === "onedrive@a.service",
+          "an open click for a vanished account leaves the selection alone")
         harness.drain("")
       }
 
@@ -2250,7 +2261,97 @@ Item {
         harness.drain(harness.statusPayload({}))
       }
 
-      else if (s >= 205) {
+
+      // ---------------------------------------------------------------------
+      // The exec-hint gluing, driven ACROSS accounts. The earlier notification
+      // steps notify about the account that is also selected, so a mutation
+      // sending the SELECTED account's service in the exec -- every popup then
+      // opens whatever the panel happened to be on -- stayed green.
+      else if (s === 205) {
+        console.log("a popup names the account that raised it, not the selected one")
+        svc.applyDiscovery([
+          { service: "onedrive@a.service", instance: "a", confdir: "/c/a", description: "A" },
+          { service: "onedrive@b.service", instance: "b", confdir: "/c/b", description: "B" }
+        ])
+        harness.drain(harness.statusPayload({}))
+      }
+
+      else if (s === 206) {
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@b.service", false)
+        harness.drain(harness.statusPayload({ confdir: "/c/b", syncDir: "/d/b" }))
+        harness.check(svc.selectedService === "onedrive@b.service", "B is selected")
+        // A -- NOT selected -- develops a reauth requirement.
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({ confdir: "/c/a" }))
+      }
+
+      else if (s === 207) {
+        Quickshell.detached = []
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({
+          confdir: "/c/a", reauthRequired: true }))
+        svc.flushTransitions()
+        var cross = harness.notifySent()
+        harness.check(cross.length === 1, "the reauth notifies")
+        harness.check(cross.length === 1
+          && cross[0].indexOf("openAccount onedrive@a.service") !== -1,
+          "...and its click names A, the account that raised it: " + (cross[0] || ""))
+        harness.check(cross.length === 1 && cross[0].indexOf("onedrive@b.service") === -1,
+          "...not B, which merely happened to be selected")
+      }
+
+      // repairFromNotification with a DIFFERENT account selected: selecting
+      // first triggers B->A selection refresh, the account goes busy, and
+      // repairResync silently refuses -- the inversion the suite never saw.
+      else if (s === 208) {
+        console.log("a repair click lands while another account is selected")
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@b.service", false)
+        harness.drain(harness.statusPayload({ confdir: "/c/b" }))
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({
+          confdir: "/c/a", resyncRequired: true, serviceFailed: true,
+          running: false, activeState: "inactive" }))
+        harness.check(svc.selectedService === "onedrive@b.service", "B is selected")
+        Quickshell.detached = []
+        svc.repairFromNotification("onedrive@a.service")
+        harness.check(harness.detachedWith("--sync --resync").length === 1,
+          "the repair still runs -- launched BEFORE the selection refresh could block it")
+        harness.check(harness.detachedWith("--confdir /c/a").length === 1,
+          "...against A's own config directory")
+        harness.check(svc.selectedService === "onedrive@a.service",
+          "...and the selection then moves to A, so an opened panel shows the repair")
+        harness.drain(harness.statusPayload({ confdir: "/c/a" }))
+      }
+
+      // openFromNotification must not inherit the panel's stale-quota retry:
+      // a notification click is not consent to contact Microsoft.
+      else if (s === 209) {
+        console.log("an open click does not silently start a cloud check")
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@a.service", false)
+        harness.drain(harness.statusPayload({ confdir: "/c/a" }))
+        // B carries a failed storage check old enough to retry.
+        svc.accounts[1].refresh(false)
+        harness.finishStatus("onedrive@b.service", harness.statusPayload({
+          confdir: "/c/b", syncDir: "/d/b",
+          quotaError: "temporary failure", quotaCheckedTs: 1 }))
+        harness.check(svc.accounts[1].quotaError !== "", "B has a stale failed check")
+        svc.openFromNotification("onedrive@b.service")
+        harness.drain(harness.statusPayload({
+          confdir: "/c/b", quotaError: "temporary failure", quotaCheckedTs: 1 }))
+      }
+
+      else if (s === 210) {
+        harness.check(harness.liveWith("--quota").length === 0,
+          "the open click queued no storage retry")
+        harness.check(svc.selectedService === "onedrive@b.service",
+          "...while still selecting the account the popup was about")
+        harness.drain(harness.statusPayload({}))
+      }
+
+      else if (s >= 211) {
         // The count is printed so tests/run can tell "every check passed" from
         // "no check ran": a qml that exits 0 without executing the harness, or a
         // step loop that stops early, both used to read as success.

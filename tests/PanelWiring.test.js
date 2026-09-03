@@ -87,13 +87,27 @@ test("the IPC account handlers delegate and do nothing else", () => {
     'function accounts(): string { if (!root.service) return "[]" ' +
     'return JSON.stringify(Model.accountRows(root.service.accounts, root.service.selectedService)) }')
   assert.equal(
-    code(barWidget, "function selectAccount(target: string)", "\n  }\n\n  BarIconButton"),
+    code(barWidget, "function selectAccount(target: string)", "function openAccount"),
     'function selectAccount(target: string): string { if (!root.service) return "no accounts" ' +
     'var found = Model.resolveAccountTarget(root.service.accounts, target) ' +
     'if (found === "") return "unknown account: " + target ' +
     // false: automation must not inherit the panel's stale-quota retry, which
     // contacts Microsoft.
     'root.service.selectAccount(found, false) return "ok" }')
+  // The notification click handlers: the daemon delivers a click as a fresh
+  // `omarchy-shell <target> openAccount|repairAccount <service>` invocation,
+  // so these two ARE the click behaviour. Substance lives in Service.qml where
+  // the harness drives it; here only the delegation is pinned.
+  assert.equal(
+    code(barWidget, "function openAccount(target: string)", "function repairAccount"),
+    'function openAccount(target: string): string ' +
+    // Open first: Panel.open()'s selectBadgedAccount may move the selection,
+    // and the popup's account is the user's explicit choice -- it lands last.
+    '{ root.open() if (root.service) root.service.openFromNotification(target) return "ok" }')
+  assert.equal(
+    code(barWidget, "function repairAccount(target: string)", "\n  }\n\n  BarIconButton"),
+    'function repairAccount(target: string): string ' +
+    '{ if (root.service) root.service.repairFromNotification(target) return "ok" }')
 })
 
 test("opening the panel selects the badged account first, then refreshes", () => {
@@ -133,7 +147,79 @@ test("every IPC control routes to the coordinator, and none of them to another o
     'function selectAccount(target: string): string { if (!root.service) return "no accounts" ' +
     'var found = Model.resolveAccountTarget(root.service.accounts, target) ' +
     'if (found === "") return "unknown account: " + target ' +
-    'root.service.selectAccount(found, false) return "ok" }')
+    'root.service.selectAccount(found, false) return "ok" } ' +
+    'function openAccount(target: string): string ' +
+    '{ root.open() if (root.service) root.service.openFromNotification(target) return "ok" } ' +
+    'function repairAccount(target: string): string ' +
+    '{ if (root.service) root.service.repairFromNotification(target) return "ok" }')
+})
+
+test("a composed notification reaches Commands.notify with its own account", () => {
+  // Upstream pinned its durable-click call site with a static test that runs in
+  // CI (node-only, no Qt); the harness equivalent is skipped wherever qml6 is
+  // absent, so without this pin a mutation that drops the behaviour or the
+  // account from the exec hint -- or swaps summary and body, or hardcodes the
+  // urgency -- keeps CI green. The harness still proves the behaviour end to
+  // end; this makes the CI tier see it too.
+  const service = readFileSync(path.join(root, "Service.qml"), "utf8")
+  const at = service.indexOf("function flushTransitions()")
+  assert.notEqual(at, -1)
+  const body = service.slice(at, service.indexOf("\n  }", at))
+    .split("\n").map(line => line.replace(/(^|\s)\/\/.*$/, "")).join(" ")
+    .replace(/\s+/g, " ").trim()
+  assert.ok(body.endsWith(
+    "Quickshell.execDetached(Commands.notify( " +
+    "composed.urgency, composed.summary, composed.body, " +
+    "composed.action, composed.service))"), body)
+})
+
+test("the notification exec target and the IPC registration are the same name", () => {
+  // Commands.js bakes the omarchy-shell target into every notification's exec
+  // hint; BarWidget.qml registers the IpcHandler under moduleName. If they ever
+  // drift, every notification click silently reaches nothing.
+  const commands = readFileSync(path.join(root, "Commands.js"), "utf8")
+  const constant = commands.match(/var IPC_TARGET = "([^"]+)"/)
+  assert.ok(constant, "Commands.js must declare IPC_TARGET")
+  assert.match(barWidget,
+    new RegExp('moduleName: "' + constant[1].replace(/\./g, "\\.") + '"'))
+})
+
+test("no surface renders helper or file data as rich text", () => {
+  // From upstream 1.5.6, widened to our extra files: every Text in the
+  // presentation layer declares PlainText, so markup-shaped filenames cannot
+  // execute as markup anywhere -- not only at the boundaries inheritedPlainText
+  // already guards.
+  for (const name of ["Panel.qml", "StatusBadge.qml", "BarWidget.qml"]) {
+    const source = readFileSync(path.join(root, name), "utf8")
+    const textItems = source.match(/\bText\s*\{/g) || []
+    const plainTexts = source.match(/\bText\s*\{\s*\n\s*textFormat:\s*Text\.PlainText\b/g) || []
+    assert.equal(plainTexts.length, textItems.length,
+      name + ": every Text must declare textFormat: Text.PlainText")
+    const headers = source.match(/\bPanelSectionHeader\s*\{/g) || []
+    const plainHeaders = source.match(/\bPanelSectionHeader\s*\{\s*\n\s*textFormat:\s*Text\.PlainText\b/g) || []
+    assert.equal(plainHeaders.length, headers.length,
+      name + ": every PanelSectionHeader must declare textFormat: Text.PlainText")
+  }
+  const panel = readFileSync(path.join(root, "Panel.qml"), "utf8")
+  assert.ok((panel.match(/\bText\s*\{/g) || []).length >= 20,
+    "the Panel sweep must actually be sweeping something")
+  // The old mechanism must be fully gone: a quoted notify-send literal
+  // anywhere in the runtime would be the stdout-tracked path coming back.
+  for (const name of ["Service.qml", "BarWidget.qml", "Commands.js"]) {
+    const source = readFileSync(path.join(root, name), "utf8")
+    assert.ok(!source.includes('"notify-send"'), name + " reverted to notify-send")
+    assert.ok(!source.includes("--action=default="), name + " reverted to libnotify actions")
+  }
+})
+
+test("release metadata stays synchronized", () => {
+  // Verbatim from upstream 1.5.5: the manifest version must have a dated
+  // changelog entry.
+  const manifest = JSON.parse(readFileSync(path.join(root, "manifest.json"), "utf8"))
+  const changelog = readFileSync(path.join(root, "CHANGELOG.md"), "utf8")
+  assert.match(manifest.version, /^\d+\.\d+\.\d+$/)
+  assert.match(changelog, new RegExp(
+    "^## " + manifest.version.replaceAll(".", "\\.") + " - \\d{4}-\\d{2}-\\d{2}$", "m"))
 })
 
 test("every bar gesture points at the badged account before acting", () => {

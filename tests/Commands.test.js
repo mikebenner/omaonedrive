@@ -303,3 +303,35 @@ test("account names are labels, not systemd sentences", () => {
   assert.equal(Model.accountName("", "OneDrive Client for Linux"), "OneDrive")
   assert.equal(Model.accountName(null), "OneDrive")
 })
+
+test("notifications carry their click as a persisted exec hint", () => {
+  // Adapted from upstream 1.5.5/1.5.6: the daemon persists --exec and runs it
+  // on click, so the click works after a shell or plugin reload -- the old
+  // tracked notify-send read the click back from stdout and died with the
+  // process. Everything after --exec is the click command, one argv element
+  // per word, with the ACCOUNT riding along -- never joined into a string.
+  assert.deepEqual(
+    Commands.notify("critical", "OneDrive needs a resync", "Body.", "repair", "onedrive@dragones.service"),
+    ["omarchy-notification-send", "--app-name", "OmaOneDrive", "--urgency", "critical",
+     "OneDrive needs a resync", "Body.",
+     "--exec", "omarchy-shell", "io.github.salemsayed.omaonedrive", "repairAccount", "onedrive@dragones.service"])
+  assert.deepEqual(
+    Commands.notify("critical", "OneDrive needs reauthentication", "Body.", "open", "onedrive@personal.service"),
+    ["omarchy-notification-send", "--app-name", "OmaOneDrive", "--urgency", "critical",
+     "OneDrive needs reauthentication", "Body.",
+     "--exec", "omarchy-shell", "io.github.salemsayed.omaonedrive", "openAccount", "onedrive@personal.service"])
+  // No behaviour, no exec: the recovered/storage popups are informational.
+  assert.deepEqual(
+    Commands.notify("normal", "OneDrive recovered", "Sync is healthy.", "", ""),
+    ["omarchy-notification-send", "--app-name", "OmaOneDrive", "--urgency", "normal",
+     "OneDrive recovered", "Sync is healthy."])
+  // A behaviour with no account degrades to the accountless IPC calls, which
+  // act on the selected account -- today's single-account behaviour.
+  assert.deepEqual(Commands.notificationExec("open", ""),
+    ["omarchy-shell", "io.github.salemsayed.omaonedrive", "open"])
+  assert.deepEqual(Commands.notificationExec("repair", ""),
+    ["omarchy-shell", "io.github.salemsayed.omaonedrive", "resync"])
+  // An unrecognised behaviour is a closed door, not a command.
+  assert.deepEqual(Commands.notificationExec("arbitrary user input", "x"), [])
+  assert.deepEqual(Commands.notificationExec("", "onedrive@a.service"), [])
+})

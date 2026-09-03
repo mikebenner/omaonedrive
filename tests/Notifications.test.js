@@ -25,8 +25,7 @@ function event(kind, name, overrides) {
     summary: summaries[kind],
     short: shorts[kind],
     body: "detail for " + name,
-    action: kind === "resync" ? "repair" : (kind === "recovered" || kind === "storage" ? "" : "open"),
-    actionLabel: kind === "resync" ? "Run resync repair" : "Open OneDrive panel"
+    action: kind === "resync" ? "repair" : (kind === "recovered" || kind === "storage" ? "" : "open")
   }, overrides || {})
 }
 
@@ -48,11 +47,13 @@ test("with several accounts a lone event names its account", () => {
   assert.equal(one.urgency, "critical")
 })
 
-test("a lone resync keeps its actionable repair button", () => {
+test("a lone resync keeps its actionable repair click", () => {
   // The one case where the click can act directly rather than just opening.
+  // The label is gone with the mechanism: omarchy-notification-send renders no
+  // button, the whole popup is the click and the behaviour+account travel in
+  // its persisted exec hint.
   const one = Model.composeNotification([event("resync", "Dragones")], true)
   assert.equal(one.action, "repair")
-  assert.equal(one.actionLabel, "Run resync repair")
   assert.equal(one.service, "onedrive@dragones.service")
 })
 

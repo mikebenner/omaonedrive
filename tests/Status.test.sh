@@ -409,8 +409,8 @@ spec = importlib.util.spec_from_file_location("omaonedrive_status", sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 exit_code, output = module.command_output(
-  [sys.executable, "-c", "import time; print('partial', flush=True); time.sleep(1)"],
-  timeout=0.05,
+  ["bash", "-c", "printf 'partial\\n'; sleep 5"],
+  timeout=1.0,
 )
 assert exit_code == 124
 assert output == "partial"

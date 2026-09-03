@@ -172,7 +172,6 @@ Panel {
 
   Connections {
     target: oneDrive
-    function onOpenPanelRequested() { root.open() }
     function onAuthenticatedChanged() { root.ensureCursor() }
     function onActivityChanged() { root.ensureCursor() }
     function onQuotaKnownChanged() { root.ensureCursor() }
@@ -305,6 +304,8 @@ Panel {
                   visible: oneDrive.installed && oneDrive.serviceAvailable && oneDrive.authenticated
 
                   Text {
+
+                    textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
                     text: oneDrive.activeState === "activating" ? "Starting"
                       : (oneDrive.syncing ? "Syncing" : (oneDrive.active ? "Monitoring" : "Paused"))
@@ -335,6 +336,8 @@ Panel {
           }
 
           Text {
+
+            textFormat: Text.PlainText
             visible: oneDrive.actionStatus !== "" || oneDrive.lastError !== ""
             width: parent.width
             text: oneDrive.actionStatus !== "" ? oneDrive.actionStatus : oneDrive.lastError
@@ -390,6 +393,8 @@ Panel {
           }
 
           Text {
+
+            textFormat: Text.PlainText
             visible: oneDrive.authenticated && oneDrive.serviceAvailable && !oneDrive.enabled
             width: parent.width
             text: oneDrive.running
@@ -438,6 +443,8 @@ Panel {
                 implicitHeight: Math.max(storageHeader.implicitHeight, storageValue.implicitHeight)
 
                 PanelSectionHeader {
+
+                  textFormat: Text.PlainText
                   id: storageHeader
                   text: "STORAGE"
                   foreground: root.foreground
@@ -447,6 +454,8 @@ Panel {
                 }
 
                 Text {
+
+                  textFormat: Text.PlainText
                   id: storageValue
                   text: Model.usageShort(oneDrive.usedBytes, oneDrive.quotaBytes, oneDrive.quotaKnown)
                   color: Qt.darker(root.foreground, 1.4)
@@ -484,6 +493,8 @@ Panel {
                 implicitHeight: Math.max(storageFree.implicitHeight, storageChecked.implicitHeight)
 
                 Text {
+
+                  textFormat: Text.PlainText
                   id: storageFree
                   text: oneDrive.quotaKnown
                     ? Model.freeText(oneDrive.usedBytes, oneDrive.quotaBytes, oneDrive.quotaKnown)
@@ -497,6 +508,8 @@ Panel {
                 }
 
                 Text {
+
+                  textFormat: Text.PlainText
                   id: storageChecked
                   text: Model.checkedText(oneDrive.quotaCheckedTs)
                   color: root.dim
@@ -509,6 +522,8 @@ Panel {
               }
 
               Text {
+
+                textFormat: Text.PlainText
                 id: quotaWarning
                 visible: oneDrive.quotaChecking || oneDrive.quotaError !== ""
                 width: parent.width
@@ -554,6 +569,8 @@ Panel {
               implicitHeight: Math.max(activityHeader.implicitHeight, activityMeta.implicitHeight)
 
               PanelSectionHeader {
+
+                textFormat: Text.PlainText
                 id: activityHeader
                 text: "ACTIVITY"
                 foreground: root.foreground
@@ -563,6 +580,8 @@ Panel {
               }
 
               Text {
+
+                textFormat: Text.PlainText
                 id: activityMeta
                 text: Model.syncMeta(oneDrive.lastSyncTs) || Model.activityMeta(root.activityRows)
                 color: Qt.darker(root.foreground, 1.4)
@@ -576,6 +595,8 @@ Panel {
             }
 
             Text {
+
+              textFormat: Text.PlainText
               visible: root.activityRows.length === 0
               width: parent.width
               text: "No recent OneDrive activity."
@@ -612,6 +633,8 @@ Panel {
             spacing: Style.space(6)
 
             PanelSectionHeader {
+
+              textFormat: Text.PlainText
               text: oneDrive.active ? "PAUSE FOR" : "RESUME IN"
               foreground: root.foreground
               fontFamily: root.fontFamily
@@ -798,6 +821,8 @@ Panel {
       spacing: Style.space(9)
 
       Text {
+
+        textFormat: Text.PlainText
         id: actionRowGlyph
         text: actionRow.icon
         color: root.foreground
@@ -819,6 +844,8 @@ Panel {
         spacing: Style.space(1)
 
         Text {
+
+          textFormat: Text.PlainText
           Layout.fillWidth: true
           text: actionRow.title
           color: root.foreground
@@ -828,6 +855,8 @@ Panel {
         }
 
         Text {
+
+          textFormat: Text.PlainText
           Layout.fillWidth: true
           text: actionRow.subtitle
           color: root.dim
@@ -906,6 +935,8 @@ Panel {
       spacing: Style.space(7)
 
       Text {
+
+        textFormat: Text.PlainText
         text: Model.activityGlyph(activityRow.rowData)
         color: root.foreground
         font.family: root.fontFamily
@@ -918,6 +949,8 @@ Panel {
         spacing: Style.space(1)
 
         Text {
+
+          textFormat: Text.PlainText
           Layout.fillWidth: true
           text: activityRow.title
           color: activityRow.kind === "error" && !activityRow.recovered
@@ -928,6 +961,8 @@ Panel {
         }
 
         Text {
+
+          textFormat: Text.PlainText
           visible: activityRow.detail !== ""
           Layout.fillWidth: true
           text: activityRow.detail
@@ -939,6 +974,8 @@ Panel {
       }
 
       Text {
+
+        textFormat: Text.PlainText
         text: Model.relativeTime(activityRow.rowData && activityRow.rowData.ts || 0)
         color: root.dim
         font.family: root.fontFamily
@@ -975,6 +1012,8 @@ Panel {
       spacing: Style.space(5)
 
       Text {
+
+        textFormat: Text.PlainText
         anchors.verticalCenter: parent.verticalCenter
         visible: accountTab.stateKind !== ""
         text: Model.badgeGlyph(accountTab.stateKind)
@@ -986,6 +1025,8 @@ Panel {
       }
 
       Text {
+
+        textFormat: Text.PlainText
         anchors.verticalCenter: parent.verticalCenter
         text: accountTab.account
           ? Model.accountName(accountTab.account.instance, accountTab.account.description)
@@ -1030,6 +1071,8 @@ Panel {
       spacing: Style.space(6)
 
       Text {
+
+        textFormat: Text.PlainText
         id: actionChipGlyph
         anchors.verticalCenter: parent.verticalCenter
         text: actionChip.icon
@@ -1047,6 +1090,8 @@ Panel {
       }
 
       Text {
+
+        textFormat: Text.PlainText
         // Keep the label inside the chip border: give it only the width the
         // chip can spare, shrinking the font slightly before eliding.
         readonly property real availableWidth: actionChip.width - Style.space(16)
@@ -1104,6 +1149,8 @@ Panel {
       spacing: Style.space(8)
 
       Text {
+
+        textFormat: Text.PlainText
         id: compactActionGlyph
         text: compactRow.icon
         color: root.foreground
@@ -1121,6 +1168,8 @@ Panel {
       }
 
       Text {
+
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         text: compactRow.title
         color: root.foreground
@@ -1130,6 +1179,8 @@ Panel {
       }
 
       Text {
+
+        textFormat: Text.PlainText
         visible: compactRow.meta !== ""
         text: compactRow.meta
         color: root.dim

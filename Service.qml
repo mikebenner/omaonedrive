@@ -56,7 +56,6 @@ Item {
   property string discoveryError: ""
   property bool _discoverySettled: true
 
-  signal openPanelRequested()
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -337,35 +336,40 @@ Item {
     var composed = Model.composeNotification(events, accountCount > 1)
     if (!composed) return
     _baselineSent = true
-    if (composed.action === "") {
-      Quickshell.execDetached(Commands.notify(composed.urgency, composed.summary, composed.body))
-      return
-    }
-    // Only one action-bearing notify-send can be tracked at a time, because the
-    // click is read back from its stdout. A second one waits rather than losing
-    // its action.
-    if (notifyProcess.running) {
-      // An action-bearing notify-send blocks until the popup is dismissed, and a
-      // critical popup does not expire on its own. Queueing behind it meant a
-      // single unread alert hid every later one, possibly for hours. Show this
-      // one without its click action instead -- which is what the widget did
-      // before the broker existed.
-      Quickshell.execDetached(Commands.notify(composed.urgency, composed.summary, composed.body))
-      return
-    }
-    startActionNotification(composed)
+    // The click command rides inside the notification as a persisted --exec
+    // hint, so it survives shell and plugin reloads -- the old tracked
+    // notify-send read the click back from stdout and died with this process.
+    // That also removes the one-tracked-popup-at-a-time constraint and its
+    // action-dropping fallback: every popup is fire-and-forget now, and every
+    // one keeps its click.
+    Quickshell.execDetached(Commands.notify(
+      composed.urgency, composed.summary, composed.body,
+      composed.action, composed.service))
   }
 
-  property string _notifyBehavior: ""
-  property string _notifyService: ""
+  // What a notification click does, reached over IPC (BarWidget's openAccount
+  // and repairAccount) because the daemon delivers the click as a fresh
+  // `omarchy-shell` invocation. Both live here so the harness can drive them.
+  function openFromNotification(target) {
+    var found = Model.resolveAccountTarget(accounts, target)
+    // An account that vanished since the popup fired: still open the panel --
+    // the user asked for it -- just on whatever is selected.
+    if (found !== "" && found !== selectedService) selectAccount(found, false)
+  }
 
-  function startActionNotification(composed) {
-    _notifyBehavior = composed.action
-    _notifyService = composed.service
-    notifyProcess.command = Commands.notify(
-      composed.urgency, composed.summary, composed.body,
-      { id: "default", label: composed.actionLabel })
-    notifyProcess.running = true
+  function repairFromNotification(target) {
+    var found = Model.resolveAccountTarget(accounts, target)
+    // Unlike open, a repair on the WRONG account deletes and re-downloads the
+    // wrong drive. A stale target repairs nothing rather than whatever
+    // happens to be selected.
+    if (found === "") return
+    // Repair BEFORE selecting: selection refreshes the account, and
+    // repairResync refuses one that is mid-poll -- the click would silently do
+    // nothing. The select is only so the panel shows the account being
+    // repaired if the user opens it next.
+    var account = accountForService(found)
+    if (account) account.repairResync()
+    if (found !== selectedService) selectAccount(found, false)
   }
 
   // --- selected-account facade ----------------------------------------------
@@ -511,33 +515,6 @@ Item {
       }
       heldRounds = 0
       root.flushTransitions()
-    }
-  }
-
-  // Omarchy's notification popups invoke the libnotify action registered under
-  // the canonical "default" identifier when the popup is clicked, rather than
-  // rendering per-action buttons, so the action is always "default" and the
-  // intended behaviour is tracked here.
-  Process {
-    id: notifyProcess
-    running: false
-    command: []
-    stdout: StdioCollector { id: notifyStdout; waitForEnd: true }
-    stderr: StdioCollector { waitForEnd: true }
-    onExited: function(exitCode) {
-      var behavior = root._notifyBehavior
-      var service = root._notifyService
-      root._notifyBehavior = ""
-      root._notifyService = ""
-      if (String(notifyStdout.text || "").trim() !== "default") return
-      if (behavior === "open") {
-        // Select the account the notification was about before opening.
-        if (service !== "") root.selectAccount(service)
-        root.openPanelRequested()
-      } else if (behavior === "repair") {
-        var account = root.accountForService(service)
-        if (account) account.repairResync()
-      }
     }
   }
 
