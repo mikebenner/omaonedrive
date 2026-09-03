@@ -1,5 +1,38 @@
 # OmaOneDrive VM test report
 
+## Omarchy 4.0.1 compatibility rerun
+
+Test date: 2026-08-31 (`Africa/Cairo`)
+
+OmaOneDrive 1.5.6 was retested in its own disposable QEMU/KVM overlay after
+installing the official `omarchy 4.0.1-1` and `omarchy-settings 4.0.1-1`
+packages. The installed `omarchy-notification-send` checksum matched the
+script at Omarchy tag `v4.0.1` (`13f18b2cb7286fb54f87daf571a031aa6af3d8f0`).
+
+- The complete JavaScript, Python, and shell suite passed in the guest.
+- The exact 4.0.1 plugin validator accepted the source and installed trees.
+- `qmllint` returned success against `/usr/share/omarchy/shell`.
+- All 22 direct `Text` surfaces and three inherited section headers explicitly
+  used `Text.PlainText`; the static regression and live shell load both passed
+  with markup-shaped filenames and helper output treated as literal text.
+- Helper status strings are also neutralized before entering Omarchy 4.0.1's
+  inherited `BarIconButton` tooltip and `PanelHero` metadata renderers; a
+  markup-shaped synthetic filename remained literal in both model paths.
+- A local Git source installed and enabled through `omarchy plugin add`; its
+  status and open IPC methods responded after discovery and after a shell
+  restart, with no OmaOneDrive runtime errors in the shell log.
+- The exact 4.0.1 notification helper accepted the model's corrected layout:
+  title and body first, then `--exec` and separate `omarchy-shell` arguments.
+  The shell persisted that exact argv vector, retained it across a restart,
+  and the plugin's target accepted the matching open call.
+- No user-interface pixels changed in 1.5.6, so this compatibility-only run did
+  not replace the already-sanitized visuals. The new presentation-boundary
+  guards only change how markup-shaped untrusted strings are interpreted.
+
+The rerun qualifies the 4.0.1 plugin, IPC, and notification contracts. The
+real-account and transfer qualification below remains the broader data-path
+run; it was not repeated for this command-order correction.
+
 Test date: 2026-08-15 (`Africa/Cairo`)
 
 This report covers two runs against the same disposable guest on 2026-08-15.

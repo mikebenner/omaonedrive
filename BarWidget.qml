@@ -154,6 +154,19 @@ BarWidget {
       root.service.selectAccount(found, false)
       return "ok"
     }
+    // Notification clicks land here: the daemon persists the popup's --exec
+    // hint and runs `omarchy-shell <target> openAccount <service>` on click,
+    // which works even after this process has been reloaded. Behaviour lives
+    // in Service.qml so the harness can drive it.
+    function openAccount(target: string): string {
+      if (root.service) root.service.openFromNotification(target)
+      root.open()
+      return "ok"
+    }
+    function repairAccount(target: string): string {
+      if (root.service) root.service.repairFromNotification(target)
+      return "ok"
+    }
   }
 
   BarIconButton {

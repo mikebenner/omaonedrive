@@ -12,6 +12,11 @@
 
 var DEFAULT_SERVICE = "onedrive.service"
 var DEFAULT_RESUME_UNIT = "omaonedrive-resume"
+// Must match BarWidget.qml's moduleName: notification clicks are delivered by
+// Omarchy's notification daemon running `omarchy-shell <target> <function>`,
+// long after this process may have restarted. tests/PanelWiring.test.js pins
+// the two files against each other.
+var IPC_TARGET = "io.github.salemsayed.omaonedrive"
 
 // The plain service deliberately keeps the legacy unit name, so a timer that is
 // already in flight survives an upgrade and stays visible and cancellable.
@@ -109,13 +114,37 @@ function scheduleResume(unit, service, minutes) {
   ]
 }
 
-function notify(urgency, summary, body, action) {
-  var command = ["notify-send", "--app-name=OmaOneDrive", "--urgency=" + String(urgency)]
-  if (action) {
-    command.push("--action=" + String(action.id) + "=" + String(action.label))
+// The click command a notification carries, as a closed argv set. Omarchy's
+// notification daemon persists this and runs it on click, so it works after a
+// shell or plugin reload -- unlike the old notify-send stdout tracking, which
+// died with the process that spawned it. The account rides along as its own
+// argv element; nothing user-controlled is ever joined into a command string.
+function notificationExec(behavior, service) {
+  var target = String(service || "")
+  if (behavior === "open") {
+    if (target === "") return ["omarchy-shell", IPC_TARGET, "open"]
+    return ["omarchy-shell", IPC_TARGET, "openAccount", target]
   }
-  command.push(String(summary))
-  command.push(String(body))
+  if (behavior === "repair") {
+    if (target === "") return ["omarchy-shell", IPC_TARGET, "resync"]
+    return ["omarchy-shell", IPC_TARGET, "repairAccount", target]
+  }
+  return []
+}
+
+// omarchy-notification-send reads every argument after --exec as the click
+// command, so the delimiter must come after the notification text and each
+// command word must stay a separate array element.
+function notify(urgency, summary, body, behavior, service) {
+  var command = [
+    "omarchy-notification-send", "--app-name", "OmaOneDrive",
+    "--urgency", String(urgency), String(summary), String(body)
+  ]
+  var exec = notificationExec(behavior, service)
+  if (exec.length > 0) {
+    command.push("--exec")
+    for (var index = 0; index < exec.length; index++) command.push(exec[index])
+  }
   return command
 }
 
@@ -123,6 +152,8 @@ if (typeof module !== "undefined") {
   module.exports = {
     DEFAULT_SERVICE: DEFAULT_SERVICE,
     DEFAULT_RESUME_UNIT: DEFAULT_RESUME_UNIT,
+    IPC_TARGET: IPC_TARGET,
+    notificationExec: notificationExec,
     resumeUnit: resumeUnit,
     status: status,
     listAccounts: listAccounts,

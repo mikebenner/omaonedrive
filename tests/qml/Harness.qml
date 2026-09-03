@@ -60,21 +60,12 @@ Item {
 
   // The argv of the notify-send this burst produced, whether it was launched
   // detached (no action) or as a tracked process (with one).
+  // Every notification is fire-and-forget now: the click command travels
+  // INSIDE it as a persisted --exec hint, so there is no tracked process left
+  // to complete. "Clicking" in a test means asserting the exec argv and then
+  // driving the Service function that argv names.
   function notifySent() {
-    var hits = harness.detachedWith("notify-send")
-    var live = harness.liveWith("notify-send")
-    return hits.concat(live)
-  }
-
-  // Complete a tracked notify-send as if the user clicked its action button.
-  function clickNotification() {
-    var live = Quickshell.running()
-    for (var i = 0; i < live.length; i++) {
-      if ((live[i].command || []).indexOf("notify-send") !== -1) {
-        return live[i].finish(0, "default")
-      }
-    }
-    return false
+    return harness.detachedWith("omarchy-notification-send")
   }
 
   // Every detached command issued so far whose argv contains `text`. Tests clear
@@ -1767,18 +1758,29 @@ Item {
         harness.check(resync.length === 1, "a new resync requirement notifies once")
         harness.check(resync.length === 1 && resync[0].indexOf("needs a resync") !== -1,
           "...as a resync, not as the failure it also sets: " + (resync[0] || ""))
-        harness.check(resync.length === 1 && resync[0].indexOf("--action=default=Run resync repair") !== -1,
-          "...offering the repair as its button: " + (resync[0] || ""))
+        // The click command is carried IN the popup and names the account, so
+        // the daemon can deliver it to a freshly reloaded shell.
+        harness.check(resync.length === 1 && resync[0].indexOf(
+          "--exec omarchy-shell io.github.salemsayed.omaonedrive repairAccount onedrive@a.service") !== -1,
+          "...carrying the repair exec for that account: " + (resync[0] || ""))
       }
 
       else if (s === 152) {
-        // Clicking "Run resync repair" must actually run it.
+        // The click arrives as `omarchy-shell … repairAccount <service>`, whose
+        // body is Service.repairFromNotification. Drive it.
         Quickshell.detached = []
-        harness.check(harness.clickNotification(), "the notification is clickable")
+        svc.repairFromNotification("onedrive@a.service")
         harness.check(harness.detachedWith("--sync --resync").length === 1,
-          "clicking the repair action runs the resync for that account")
+          "the repair click runs the resync for that account")
         harness.check(harness.detachedWith("--confdir /c/a").length === 1,
           "...against its own config directory")
+        // A popup can outlive its account. A repair on the WRONG account
+        // deletes and re-downloads the wrong drive, so a stale target repairs
+        // nothing rather than whatever is selected.
+        Quickshell.detached = []
+        svc.repairFromNotification("onedrive@gone.service")
+        harness.check(Quickshell.detached.length === 0,
+          "a repair click for a vanished account does nothing at all")
         harness.drain("")
       }
 
@@ -1827,14 +1829,23 @@ Item {
         var auth = harness.notifySent()
         harness.check(auth.length === 1 && auth[0].indexOf("reauthentication") !== -1,
           "a new reauthentication requirement notifies: " + (auth[0] || ""))
+        harness.check(auth.length === 1 && auth[0].indexOf(
+          "--exec omarchy-shell io.github.salemsayed.omaonedrive openAccount onedrive@a.service") !== -1,
+          "...and its click opens the panel on that account: " + (auth[0] || ""))
       }
 
       else if (s === 157) {
-        // Clicking a non-repair notification opens the panel on that account.
+        // The click arrives as `omarchy-shell … openAccount <service>`; the
+        // Service half selects, the BarWidget half opens the panel.
         svc.selectedService = ""
-        harness.check(harness.clickNotification(), "the notification is clickable")
+        svc.openFromNotification("onedrive@a.service")
         harness.check(svc.selectedService === "onedrive@a.service",
-          "clicking it selects the account the notification was about")
+          "the open click selects the account the notification was about")
+        // ...but an account that vanished since the popup fired must not block
+        // the open, and must not move the selection either.
+        svc.openFromNotification("onedrive@gone.service")
+        harness.check(svc.selectedService === "onedrive@a.service",
+          "an open click for a vanished account leaves the selection alone")
         harness.drain("")
       }
 

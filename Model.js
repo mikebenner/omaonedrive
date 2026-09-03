@@ -225,6 +225,14 @@ function folderName(path) {
   return parts[parts.length - 1] || value
 }
 
+// Omarchy 4.0.1's shared bar tooltip and PanelHero labels use Text.AutoText.
+// Replace markup delimiters only at those inherited rendering boundaries so a
+// local filename from the OneDrive journal remains visible but cannot become
+// rich text.
+function inheritedPlainText(value) {
+  return String(value || "").replace(/</g, "\u2039").replace(/>/g, "\u203a")
+}
+
 function tooltip(status, nowMs) {
   if (!status || status.installed !== true) return "OneDrive CLI is not installed"
   var parts = [String(status.statusText || "OneDrive")]
@@ -232,7 +240,7 @@ function tooltip(status, nowMs) {
     parts.push(String(status.syncMode))
   if (Number(status.lastSyncTs || 0) > 0)
     parts.push("last sync " + relativeTime(status.lastSyncTs, nowMs))
-  return parts.join(" · ")
+  return inheritedPlainText(parts.join(" · "))
 }
 
 function heroMeta(status) {
@@ -240,7 +248,7 @@ function heroMeta(status) {
   var parts = [String(status.statusText || "OneDrive")]
   if (status.authenticated === true && String(status.syncMode || "") !== "")
     parts.push(String(status.syncMode))
-  return parts.join(" · ")
+  return inheritedPlainText(parts.join(" · "))
 }
 
 // --- multi-account aggregation ------------------------------------------------
@@ -389,7 +397,8 @@ function aggregateTooltip(accounts, nowMs, maxLines) {
     // that instead, and only guess at the client when a poll has told us.
     if (!only || only.initialized !== true) {
       var why = only && only.attempted === true ? String(only.lastError || "") : ""
-      return why === "" ? "Checking OneDrive…" : "OneDrive status unavailable\n" + why
+      if (why === "") return "Checking OneDrive…"
+      return inheritedPlainText("OneDrive status unavailable\n" + why)
     }
     return tooltip(only, nowMs)
   }
@@ -413,7 +422,7 @@ function aggregateTooltip(accounts, nowMs, maxLines) {
     if (broken.length < list.length) {
       stalled.push("Checking " + (list.length - broken.length) + " more…")
     }
-    return stalled.join("\n")
+    return inheritedPlainText(stalled.join("\n"))
   }
 
   // Only accounts that have reported. An un-polled account still carries default
@@ -446,7 +455,9 @@ function aggregateTooltip(accounts, nowMs, maxLines) {
     lines.push(accountName(account.instance, account.description) + ": " + tooltip(account, nowMs))
   }
   if (ordered.length > cap) lines.push("+" + (ordered.length - cap) + " more")
-  return lines.join("\n")
+  // The per-account lines are already plain (tooltip() wraps itself), but the
+  // account NAMES and the broken-account error lines are helper-derived too.
+  return inheritedPlainText(lines.join("\n"))
 }
 
 // Map an aggregate state onto the bar's existing badge vocabulary. The visual
@@ -569,7 +580,6 @@ function composeNotification(events, multiAccount) {
       summary: multiAccount ? only.summary + " — " + only.name : only.summary,
       body: only.body,
       action: only.action || "",
-      actionLabel: only.actionLabel || "",
       service: only.service
     }
   }
@@ -589,7 +599,6 @@ function composeNotification(events, multiAccount) {
           ? others.map(function (event) { return event.short }).join("\n")
           : worst.body,
         action: worst.action || "open",
-        actionLabel: worst.actionLabel || "Open OneDrive panel",
         service: worst.service
       }
     }
@@ -601,7 +610,6 @@ function composeNotification(events, multiAccount) {
         // A grouped popup deliberately does not carry a direct repair action: it
         // cannot know which account the reader meant.
         action: "open",
-        actionLabel: "Open OneDrive panel",
         service: worst.service
       }
     }
@@ -618,7 +626,6 @@ function composeNotification(events, multiAccount) {
         : worst.summary + " — " + worst.name,
       body: others.map(function (event) { return event.name + ": " + event.short }).join("\n"),
       action: "open",
-      actionLabel: "Open OneDrive panel",
       service: worst.service
     }
   }
@@ -631,7 +638,6 @@ function composeNotification(events, multiAccount) {
         summary: multiAccount ? storage[0].summary + " — " + storage[0].name : storage[0].summary,
         body: storage[0].body,
         action: "",
-        actionLabel: "",
         service: storage[0].service
       }
     }
@@ -643,7 +649,6 @@ function composeNotification(events, multiAccount) {
           return multiAccount ? event.name + ": " + event.short : event.short
         }).join("\n"),
         action: "",
-        actionLabel: "",
         service: storage[0].service
       }
     }
@@ -657,7 +662,6 @@ function composeNotification(events, multiAccount) {
         return event.name + ": " + event.short
       }).join("\n"),
       action: "",
-      actionLabel: "",
       service: storage[0].service
     }
   }
@@ -667,7 +671,6 @@ function composeNotification(events, multiAccount) {
       summary: multiAccount ? "OneDrive recovered — " + recovered[0].name : "OneDrive recovered",
       body: recovered[0].body,
       action: "",
-      actionLabel: "",
       service: recovered[0].service
     }
   }
@@ -677,7 +680,6 @@ function composeNotification(events, multiAccount) {
       summary: recovered.length + " OneDrive accounts recovered",
       body: recovered.map(function (event) { return event.name + ": " + event.short }).join("\n"),
       action: "",
-      actionLabel: "",
       service: recovered[0].service
     }
   }
@@ -874,6 +876,7 @@ if (typeof module !== "undefined") {
     aggregateTooltip: aggregateTooltip,
     composeNotification: composeNotification,
     elideStatus: elideStatus,
+    inheritedPlainText: inheritedPlainText,
     barState: barState,
     badgeKind: badgeKind,
     openSelection: openSelection,
