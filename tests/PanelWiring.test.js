@@ -152,6 +152,25 @@ test("every IPC control routes to the coordinator, and none of them to another o
     '{ if (root.service) root.service.repairFromNotification(target) return "ok" }')
 })
 
+test("a composed notification reaches Commands.notify with its own account", () => {
+  // Upstream pinned its durable-click call site with a static test that runs in
+  // CI (node-only, no Qt); the harness equivalent is skipped wherever qml6 is
+  // absent, so without this pin a mutation that drops the behaviour or the
+  // account from the exec hint -- or swaps summary and body, or hardcodes the
+  // urgency -- keeps CI green. The harness still proves the behaviour end to
+  // end; this makes the CI tier see it too.
+  const service = readFileSync(path.join(root, "Service.qml"), "utf8")
+  const at = service.indexOf("function flushTransitions()")
+  assert.notEqual(at, -1)
+  const body = service.slice(at, service.indexOf("\n  }", at))
+    .split("\n").map(line => line.replace(/(^|\s)\/\/.*$/, "")).join(" ")
+    .replace(/\s+/g, " ").trim()
+  assert.ok(body.endsWith(
+    "Quickshell.execDetached(Commands.notify( " +
+    "composed.urgency, composed.summary, composed.body, " +
+    "composed.action, composed.service))"), body)
+})
+
 test("the notification exec target and the IPC registration are the same name", () => {
   // Commands.js bakes the omarchy-shell target into every notification's exec
   // hint; BarWidget.qml registers the IpcHandler under moduleName. If they ever

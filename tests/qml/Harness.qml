@@ -541,7 +541,7 @@ Item {
         svc.enqueueTransition({
           service: "onedrive@a.service", name: "A", kind: "reauth",
           summary: "OneDrive needs reauthentication", short: "Reauthentication required",
-          body: "b", action: "open", actionLabel: "Open OneDrive panel"
+          body: "b", action: "open"
         })
         harness.streamTicks += 1
       }
@@ -2261,7 +2261,97 @@ Item {
         harness.drain(harness.statusPayload({}))
       }
 
-      else if (s >= 205) {
+
+      // ---------------------------------------------------------------------
+      // The exec-hint gluing, driven ACROSS accounts. The earlier notification
+      // steps notify about the account that is also selected, so a mutation
+      // sending the SELECTED account's service in the exec -- every popup then
+      // opens whatever the panel happened to be on -- stayed green.
+      else if (s === 205) {
+        console.log("a popup names the account that raised it, not the selected one")
+        svc.applyDiscovery([
+          { service: "onedrive@a.service", instance: "a", confdir: "/c/a", description: "A" },
+          { service: "onedrive@b.service", instance: "b", confdir: "/c/b", description: "B" }
+        ])
+        harness.drain(harness.statusPayload({}))
+      }
+
+      else if (s === 206) {
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@b.service", false)
+        harness.drain(harness.statusPayload({ confdir: "/c/b", syncDir: "/d/b" }))
+        harness.check(svc.selectedService === "onedrive@b.service", "B is selected")
+        // A -- NOT selected -- develops a reauth requirement.
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({ confdir: "/c/a" }))
+      }
+
+      else if (s === 207) {
+        Quickshell.detached = []
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({
+          confdir: "/c/a", reauthRequired: true }))
+        svc.flushTransitions()
+        var cross = harness.notifySent()
+        harness.check(cross.length === 1, "the reauth notifies")
+        harness.check(cross.length === 1
+          && cross[0].indexOf("openAccount onedrive@a.service") !== -1,
+          "...and its click names A, the account that raised it: " + (cross[0] || ""))
+        harness.check(cross.length === 1 && cross[0].indexOf("onedrive@b.service") === -1,
+          "...not B, which merely happened to be selected")
+      }
+
+      // repairFromNotification with a DIFFERENT account selected: selecting
+      // first triggers B->A selection refresh, the account goes busy, and
+      // repairResync silently refuses -- the inversion the suite never saw.
+      else if (s === 208) {
+        console.log("a repair click lands while another account is selected")
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@b.service", false)
+        harness.drain(harness.statusPayload({ confdir: "/c/b" }))
+        svc.accounts[0].refresh(false)
+        harness.finishStatus("onedrive@a.service", harness.statusPayload({
+          confdir: "/c/a", resyncRequired: true, serviceFailed: true,
+          running: false, activeState: "inactive" }))
+        harness.check(svc.selectedService === "onedrive@b.service", "B is selected")
+        Quickshell.detached = []
+        svc.repairFromNotification("onedrive@a.service")
+        harness.check(harness.detachedWith("--sync --resync").length === 1,
+          "the repair still runs -- launched BEFORE the selection refresh could block it")
+        harness.check(harness.detachedWith("--confdir /c/a").length === 1,
+          "...against A's own config directory")
+        harness.check(svc.selectedService === "onedrive@a.service",
+          "...and the selection then moves to A, so an opened panel shows the repair")
+        harness.drain(harness.statusPayload({ confdir: "/c/a" }))
+      }
+
+      // openFromNotification must not inherit the panel's stale-quota retry:
+      // a notification click is not consent to contact Microsoft.
+      else if (s === 209) {
+        console.log("an open click does not silently start a cloud check")
+        harness.drain(harness.statusPayload({}))
+        svc.selectAccount("onedrive@a.service", false)
+        harness.drain(harness.statusPayload({ confdir: "/c/a" }))
+        // B carries a failed storage check old enough to retry.
+        svc.accounts[1].refresh(false)
+        harness.finishStatus("onedrive@b.service", harness.statusPayload({
+          confdir: "/c/b", syncDir: "/d/b",
+          quotaError: "temporary failure", quotaCheckedTs: 1 }))
+        harness.check(svc.accounts[1].quotaError !== "", "B has a stale failed check")
+        svc.openFromNotification("onedrive@b.service")
+        harness.drain(harness.statusPayload({
+          confdir: "/c/b", quotaError: "temporary failure", quotaCheckedTs: 1 }))
+      }
+
+      else if (s === 210) {
+        harness.check(harness.liveWith("--quota").length === 0,
+          "the open click queued no storage retry")
+        harness.check(svc.selectedService === "onedrive@b.service",
+          "...while still selecting the account the popup was about")
+        harness.drain(harness.statusPayload({}))
+      }
+
+      else if (s >= 211) {
         // The count is printed so tests/run can tell "every check passed" from
         // "no check ran": a qml that exits 0 without executing the harness, or a
         // step loop that stops early, both used to read as success.

@@ -172,7 +172,6 @@ Panel {
 
   Connections {
     target: oneDrive
-    function onOpenPanelRequested() { root.open() }
     function onAuthenticatedChanged() { root.ensureCursor() }
     function onActivityChanged() { root.ensureCursor() }
     function onQuotaKnownChanged() { root.ensureCursor() }

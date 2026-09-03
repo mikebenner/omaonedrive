@@ -42,7 +42,7 @@ fi
 # A floor, not an exact count: adding checks must not need a bookkeeping edit,
 # but silently losing most of them must fail. Raise it when coverage grows
 # substantially.
-qml_min_checks=295
+qml_min_checks=305
 qml_runner=$(command -v qml6 || echo /usr/lib/qt6/bin/qml)
 if [ -x "$qml_runner" ]; then
   # Capture qml's own status BEFORE any pipeline. Filtering through
