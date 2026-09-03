@@ -159,8 +159,12 @@ BarWidget {
     // which works even after this process has been reloaded. Behaviour lives
     // in Service.qml so the harness can drive it.
     function openAccount(target: string): string {
-      if (root.service) root.service.openFromNotification(target)
+      // Open FIRST: Panel.open() runs selectBadgedAccount, which may move the
+      // selection to whatever the badge is about. The popup's account is the
+      // user's explicit choice and has to land last, or clicking a reauth
+      // popup for Work opened the panel on whichever account was syncing.
       root.open()
+      if (root.service) root.service.openFromNotification(target)
       return "ok"
     }
     function repairAccount(target: string): string {

@@ -101,7 +101,9 @@ test("the IPC account handlers delegate and do nothing else", () => {
   assert.equal(
     code(barWidget, "function openAccount(target: string)", "function repairAccount"),
     'function openAccount(target: string): string ' +
-    '{ if (root.service) root.service.openFromNotification(target) root.open() return "ok" }')
+    // Open first: Panel.open()'s selectBadgedAccount may move the selection,
+    // and the popup's account is the user's explicit choice -- it lands last.
+    '{ root.open() if (root.service) root.service.openFromNotification(target) return "ok" }')
   assert.equal(
     code(barWidget, "function repairAccount(target: string)", "\n  }\n\n  BarIconButton"),
     'function repairAccount(target: string): string ' +
@@ -147,7 +149,7 @@ test("every IPC control routes to the coordinator, and none of them to another o
     'if (found === "") return "unknown account: " + target ' +
     'root.service.selectAccount(found, false) return "ok" } ' +
     'function openAccount(target: string): string ' +
-    '{ if (root.service) root.service.openFromNotification(target) root.open() return "ok" } ' +
+    '{ root.open() if (root.service) root.service.openFromNotification(target) return "ok" } ' +
     'function repairAccount(target: string): string ' +
     '{ if (root.service) root.service.repairFromNotification(target) return "ok" }')
 })
